@@ -1,11 +1,12 @@
-"""⑤ Behind the scenes: SQL Inspector, mem9 호출 로그, LangGraph 그래프·체크포인트 이력, 아키텍처."""
+"""⑤ Behind the scenes: SQL Inspector, mem9 호출 로그, 엔진 호출 로그, LangGraph 그래프·체크포인트 이력, 아키텍처."""
 import json
 
 import streamlit as st
 
-from core import workflow
+from core import engine_mock, workflow
 from core.db import get_db
 from core.mem9_client import get_mem9
+from core.schemas import ExecutionCommand
 from ui.common import current_user_id, current_workspace, latest_thread, localized
 from ui.i18n import ARCHITECTURE, label, lang, t
 
@@ -24,8 +25,9 @@ def mermaid(code: str, alt: str, height: int = 520) -> None:
 
 db = get_db()
 # 선택한 탭만 그린다. 숨은 탭 안에서 만든 Mermaid iframe은 크기가 0이라 그림이 그려지지 않는다
-tab_sql, tab_mem9, tab_graph, tab_arch = st.tabs(
-    [t("p5.tab_sql"), t("p5.tab_mem9"), t("p5.tab_graph"), t("p5.tab_arch")], key="behind_tab", on_change="rerun")
+tab_sql, tab_mem9, tab_engine, tab_graph, tab_arch = st.tabs(
+    [t("p5.tab_sql"), t("p5.tab_mem9"), t("p5.tab_engine"), t("p5.tab_graph"), t("p5.tab_arch")],
+    key="behind_tab", on_change="rerun")
 
 if tab_sql.open:
     with tab_sql:
@@ -54,6 +56,21 @@ if tab_mem9.open:
                     st.json(c["params"])
                 if c.get("body"):
                     st.json(c["body"])
+
+if tab_engine.open:
+    with tab_engine:
+        calls = engine_mock.calls.recent(current_workspace())
+        st.caption(t("p5.engine_caption", n=len(calls)))
+        st.markdown(t("p5.engine_contract"))
+        st.json(ExecutionCommand.model_json_schema(), expanded=False)
+        if not calls:
+            st.info(t("p5.engine_empty"))
+        for c in calls[:60]:
+            with st.expander(f"{c['method']} {c['path']} · {c['status']} · {c['ms']}ms"):
+                st.caption(t("p5.engine_request"))
+                st.json(c["body"])
+                st.caption(t("p5.engine_response"))
+                st.json(c["response"])
 
 if tab_graph.open:
     with tab_graph:

@@ -1,4 +1,4 @@
-"""화면 공통 도구: 사용자 선택, 표시용 번역, 스레드 상태 읽기, 추천 카드, 그래프 실행 스트리밍.
+"""화면 공통 도구: 사용자 선택, 표시용 번역, 스레드 상태 읽기, 추천 카드, 그래프 실행 스트리밍, 명령 생성 과정.
 
 화면 상태는 브라우저 세션이 아니라 TiDB 체크포인트에서 다시 읽는다.
 새로고침·재접속·다른 기기에서도 대기 중인 추천과 주문이 그대로 보인다.
@@ -16,6 +16,8 @@ from core import engine_mock, memory_jobs, workflow
 from core.audit import identity, log_event
 from core.db import get_db
 from core.llm import needs_translation, translate
+from core.recommender import MAX_SLIPPAGE_BPS, plain
+from core.schemas import ExecutionCommand, Opportunity
 from core.workspace import workspace_id
 from ui.i18n import LANGS, lang, t
 
@@ -173,7 +175,7 @@ def waiting_threads(user_id: int, kind: str) -> list[tuple[str, Any, dict]]:
 
 def card_meta(card: dict) -> str:
     apy = t("card.apy", apy=f"{card['expected_apy']:g}") if card.get("expected_apy") is not None else t("card.apy_none")
-    where = t("card.account", loc=card["chain"]) if engine_mock.route(card["chain"]) == "거래소 API" else card["chain"]
+    where = t("card.account", loc=card["chain"]) if engine_mock.route(card["chain"]) == engine_mock.EXCHANGE_API else card["chain"]
     return f"{card['protocol']} · {where} · {t('action.' + card['action_type'])} · {apy} · {t('card.risk', r=card['risk_level'])}"
 
 
@@ -344,3 +346,61 @@ def memory_updating_note(app_id: str) -> None:
     else:
         st.rerun()
 
+
+
+# ---- 승인 화면: 투자 정보가 엔진 명령이 되기까지 (Structured Output) ----
+
+ORIGINS = {"llm": ("violet", ":material/auto_awesome:"), "app": ("blue", ":material/verified:"),
+           "engine": ("green", ":material/settings_suggest:")}
+
+
+def _flow_step(n: int, key: str, origin: str, caption: str) -> None:
+    color, icon = ORIGINS[origin]
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.markdown(f"**{n}. {t(key)}**")
+        st.badge(t("p4.by_" + origin), icon=icon, color=color)
+    st.caption(caption)
+
+
+def command_flow_panel(values: dict, approval: dict) -> None:
+    """원문 → Opportunity → CommandDraft → 앱 검증 → tool 호출 → ExecutionCommand → 엔진 시뮬레이션을 JSON으로 보여준다.
+
+    LLM이 만든 값은 그대로, 앱이 채운 값은 채운 그대로 보여 '어디까지가 AI이고 어디부터가 앱인지'를 드러낸다.
+    """
+    card = values["selected"]
+    rows = get_db().query(
+        """SELECT s.id AS signal_id, s.source, s.author, s.posted_at, s.content,
+                  o.title, o.asset, o.chain, p.name AS protocol, o.action_type, o.expected_apy, o.risk_level,
+                  o.horizon, o.confidence, o.summary, o.rationale
+           FROM opportunities o
+           JOIN protocols p ON p.id = o.protocol_id
+           JOIN raw_signals s ON s.id = o.signal_id
+           WHERE o.id = %s""", (card["opportunity_id"],), label="승인: 원문·기회 조회")
+    row = plain(rows[0]) if rows else None
+    calls = [c for m in values.get("messages", []) for c in getattr(m, "tool_calls", None) or []]
+    command = approval["command"]
+
+    with st.expander(t("p4.flow"), icon=":material/data_object:"):
+        st.caption(t("p4.flow_intro"))
+        if row:
+            _flow_step(1, "p4.flow_1", "app", t("p4.flow_1_caption", id=row["signal_id"], source=row["source"],
+                                                  author=row["author"]))
+            st.json({k: row[k] for k in ("source", "author", "posted_at", "content")})
+            _flow_step(2, "p4.flow_2", "llm", t("p4.flow_2_caption"))
+            st.json({k: row[k] for k in Opportunity.model_fields}, expanded=1)
+        _flow_step(3, "p4.flow_3", "llm", t("p4.flow_3_caption", n=values.get("attempts", 1)))
+        st.json({"steps": card["proposed_steps"],
+                 "max_slippage_bps": max((s["slippage_bps"] for s in card["proposed_steps"]), default=0)})
+        _flow_step(4, "p4.flow_4", "app", t("p4.flow_4_caption"))
+        st.markdown(t("p4.flow_checks", max=MAX_SLIPPAGE_BPS)
+                    + ("\n" + t("p4.flow_check_lp") if card.get("action_type") == "lp" else ""))
+        if calls:
+            _flow_step(5, "p4.flow_5", "llm", t("p4.flow_5_caption", n=values.get("exec_tool_calls", len(calls))))
+            st.json({"tool": calls[-1]["name"], "args": calls[-1]["args"]})
+            st.caption(t("p4.tool_caption"))
+        _flow_step(6, "p4.flow_6", "app", t("p4.flow_6_caption"))
+        st.json(command)
+        st.caption(t("p4.flow_schema"))
+        st.json(ExecutionCommand.model_json_schema(), expanded=False)
+        _flow_step(7, "p4.flow_7", "engine", t("p4.flow_7_caption"))
+        st.json(approval["simulation"], expanded=1)

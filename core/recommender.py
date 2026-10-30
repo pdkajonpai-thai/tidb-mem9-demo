@@ -443,7 +443,7 @@ def execute_order(
         max_slippage_bps=max(s["slippage_bps"] for s in steps),
         expires_at=(datetime.fromisoformat(state["selected_at"]) + COMMAND_TTL).isoformat(timespec="seconds"),
     ).model_dump()
-    simulation = engine_mock.simulate(steps, card["expected_apy"])
+    simulation = engine_mock.simulate(steps, card["expected_apy"], command_id=command["command_id"])
     db = get_db()
     # 해외 거래소 계정 안의 주문이면 해외 잔고 정보(신고 참고)를 승인 화면에 함께 보여준다 (읽기만 함)
     overseas = None

@@ -53,7 +53,7 @@ def main() -> int:
     for lang in ("ko", "en"):
         # 언어가 바뀌면 위젯 라벨·표시 이름이 바뀌므로 언어마다 새 세션으로 시작한다
         at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=300)
-        at.session_state["lang"] = {"ko": "한국어", "en": "English"}[lang]
+        at.session_state["_lang"] = {"ko": "한국어", "en": "English"}[lang]
         at.run()
         for uid in (1, 2, 3):
             at.session_state["user_id"] = uid

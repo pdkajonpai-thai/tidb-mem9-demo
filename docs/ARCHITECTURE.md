@@ -576,6 +576,24 @@ class ExecutionCommand(BaseModel):
   - 슬리피지 100bps 이하
   - 순위 번호와 `max_slippage_bps`는 앱이 바로잡습니다.
 
+### 5.1 투자 정보가 엔진 명령이 되기까지 (화면에서 보기)
+
+④ 승인 화면의 **"AI가 이 주문을 엔진 명령으로 만든 과정 (Structured Output)"**(기본 접힘)을 펼치면, 지금 승인을 기다리는 주문 하나가 만들어진 과정을 단계별 JSON으로 보여줍니다. 단계마다 누가 만들었는지(LLM · 앱 · 엔진 API)를 배지로 표시해, 어디까지가 AI이고 어디부터 앱이 책임지는지 드러냅니다.
+
+| # | 단계 | 만든 주체 | 보이는 것 |
+|---|---|---|---|
+| 1 | 원문 신호 | 앱 (TiDB `raw_signals`) | 출처, 작성자, 시각, 본문 |
+| 2 | 투자 기회 JSON | LLM · `Opportunity` 스키마 | 분석 그래프가 추출해 `opportunities`에 저장한 필드 |
+| 3 | AI 주문 초안 | LLM · `CommandDraft` 스키마 | 추천 카드의 제안 실행 단계, 생성 횟수(검증 실패 시 재생성) |
+| 4 | 앱 검증 | 앱 | `step_errors()`가 확인하는 항목: 보유 수량, 위치, 거래소 계정, 슬리피지 한도, LP 규칙 |
+| 5 | tool 호출 | LLM (실행 agent) | `execute_order`의 JSON 인자, 호출 횟수 |
+| 6 | 엔진 명령 | 앱 · `ExecutionCommand` | 앱이 command_id·user_id·strategy_id·expires_at을 채운 최종 계약 + JSON Schema |
+| 7 | 엔진 시뮬레이션 응답 | 엔진 API | `POST /v1/orders/simulate` 응답 (예상 체결·수수료·연 수익) |
+
+- 승인하면 "방금 처리한 주문"에 엔진 응답(`POST /v1/orders` → order_id, status, tx_hash)이 나옵니다.
+- ⑤ Behind the scenes의 **Engine calls** 탭에는 엔진 API 호출이 요청·응답 JSON으로 쌓이고, 맨 위에 엔진 계약(`ExecutionCommand` JSON Schema)이 있습니다. 기록은 [core/engine_mock.py](../core/engine_mock.py)의 `calls`(작업 공간별 `CallLog`)에 남습니다. 승인 뒤 재개하면 tool이 다시 실행되므로, 같은 `command_id`의 시뮬레이션은 한 번만 기록합니다.
+- 실제 엔진과 연동할 때는 `engine_mock.py`의 `simulate()`·`submit()`을 엔진 API 호출로 바꾸고, 필요하면 `ExecutionCommand` 스키마를 엔진 입력 형식에 맞춥니다. 나머지 흐름은 그대로입니다.
+
 ---
 
 ## 6. Streamlit 화면 구성
@@ -585,8 +603,8 @@ class ExecutionCommand(BaseModel):
 | 1 | Signal 분석 | 인플루언서·DeFi 원문 목록 → "AI 분석" 버튼(병렬 분석 진행률 표시) → 구조화된 기회 테이블과 JSON | AI → Structured Output |
 | 2 | 사용자 대시보드 | 보유 자산(위치·국내/해외/온체인 구분)·거래소 계정, mem9 기억 목록, 해외 거래소 월말 잔고 차트(5억 원 기준선) | TiDB 관계형 데이터·월별 집계 + mem9, 해외 계좌 신고 참고 |
 | 3 | 개인화 추천 | 그래프 진행 단계 표시 → 후보 Top-10 → LLM 추천 카드 3개 + 근거(실시간 스트리밍, 데이터 + 참고한 기억) | 두 기술의 결합 |
-| 4 | 승인 & 실행 | 추천에 "실행 요청" → 실행 agent의 `execute_order` tool 호출 표시 → 승인 화면(주문 요약·실행 경로·단계·시뮬레이션, 해외 거래소 주문이면 해외 잔고 정보) → 승인/거절(사유) → Mock 엔진 진행 상태 → agent 결과 요약 | AI agent가 엔진 API를 tool로 호출하고 사람이 승인, 새로고침 후에도 이어지는 승인 |
-| 5 | Behind the scenes | SQL Inspector, mem9 API 호출 로그, LangGraph 그래프와 체크포인트 이력, 아키텍처 다이어그램 | 기술적 신뢰 |
+| 4 | 승인 & 실행 | 추천에 "실행 요청" → 승인 화면(주문 요약·실행 경로·단계·시뮬레이션, 해외 거래소 주문이면 해외 잔고 정보, 원문 → JSON → 엔진 명령 과정(5.1절)) → 승인/거절(사유) → 엔진 응답·agent 결과 요약 | AI가 만든 JSON 명령을 agent가 엔진 API로 넘기고 사람이 승인, 새로고침 후에도 이어지는 승인 |
+| 5 | Behind the scenes | SQL Inspector, mem9 API 호출 로그, 엔진 API 호출 로그(Engine calls), LangGraph 그래프와 체크포인트 이력, 아키텍처 다이어그램 | 기술적 신뢰 |
 
 사이드바에 **"데모 초기화"** 버튼(확인 단계 포함)을 두어 **자기 작업 공간만** 시연 전 상태로 되돌립니다(6.3절). 누구나 쓸 수 있고 다른 방문자에게는 영향이 없습니다.
 - **중복 실행 방지**: 누르면 초기화가 끝날 때까지(약 15초) 버튼이 비활성화됩니다. 작업 공간마다 잠금을 두어, 같은 계정으로 두 창에서 눌러도 한 번만 실행됩니다.
@@ -667,18 +685,105 @@ class ExecutionCommand(BaseModel):
 
 ## 7. PostgreSQL 기반 접근 대비 차별화
 
-**전제**: PostgreSQL도 pgvector 확장을 쓰면 JOIN과 벡터 검색을 한 SQL로 할 수 있습니다. 따라서 "PostgreSQL은 못 한다"가 아니라 **운영·확장 측면의 차이**로 설명합니다.
+**전제**: PostgreSQL도 pgvector 확장을 쓰면 JOIN과 벡터 검색을 한 SQL로 할 수 있고, pgai Vectorizer 같은 도구로 임베딩 생성을 자동화할 수도 있습니다. 따라서 "PostgreSQL은 못 한다"가 아니라, **같은 기능을 갖추는 데 필요한 구성 요소 수와 규모가 커질 때의 운영·확장 부담**의 차이로 설명합니다.
 
 | 관점 | PostgreSQL + pgvector 일반 구성 | TiDB + mem9 |
 |---|---|---|
-| 임베딩 생성 | 앱에서 외부 임베딩 API 호출 → 벡터 저장 파이프라인 직접 구축 | `EMBED_TEXT` 생성 컬럼으로 DB가 자동 처리, 텍스트로 바로 검색 |
-| 확장 | 단일 노드 수직 확장, 대규모 시 샤딩(Citus 등) 재설계 | 분산 아키텍처로 수평 확장, 애플리케이션 변경 없음 |
-| 분석 워크로드 | 별도 분석 DB·ETL 필요한 경우가 많음 | TiFlash 컬럼 저장소로 같은 DB에서 실시간 분석. 예: 다수 거래소 × 다수 사용자 × 월말 잔고 집계를 업무 DB에서 바로 계산 |
-| 전문 검색 | 별도 구성 또는 외부 검색엔진 | 내장 Full-text 검색 (지원 리전) |
-| 운영 모델 | 인스턴스 크기 선택·관리 | Starter는 서버리스(사용량 기반 과금, 유휴 시 비용 최소) |
-| AI 기억 레이어 | 별도 메모리 서비스·저장소를 따로 설계 | mem9가 TiDB 위에서 동작 → 데이터와 기억의 스택 일원화, Hosted→Self-host는 URL·키만 변경 |
+| 임베딩 생성 | 앱이나 별도 워커가 임베딩 API를 호출해 벡터를 저장 (7.1) | `EMBED_TEXT` 생성 컬럼으로 DB가 처리, 질의 문장도 SQL 안에서 임베딩 (7.1) |
+| 하이브리드 검색 | 가능 (질의 벡터는 앱이 먼저 만들어 넘김) | 가능, 질의 문장을 텍스트 그대로 넘김 (7.2) |
+| 분석 워크로드 | 읽기 복제본 또는 별도 분석 DB + ETL | TiFlash 열 저장소로 같은 DB에서 실행 (7.3) |
+| 확장 | 단일 노드 수직 확장 + 읽기 복제본, 쓰기 확장은 Citus 등으로 분산 키 재설계 | 계산·행 저장·열 저장을 따로, 온라인으로 수평 확장 (7.4) |
+| 운영 모델 | 인스턴스 크기 선택·관리 | Starter는 서버리스(자동 확장, 사용량 과금, 유휴 시 비용 최소) |
+| AI 기억 레이어 | 별도 메모리 서비스·저장소를 따로 설계 | mem9가 TiDB 위에서 동작, Hosted→Self-host는 URL·키만 변경 |
 
-**정리**: 사용자와 시그널이 늘어날수록 PostgreSQL 구성은 벡터 DB 분리, 분석 DB 분리, 메모리 저장소 추가로 시스템이 쪼개집니다. TiDB + mem9는 같은 기능을 **하나의 데이터 플랫폼**에서 처리해 운영 부담과 데이터 정합성 문제를 줄입니다.
+### 7.1 임베딩: 파이프라인이 없어집니다
+
+**TiDB (이 데모의 실제 코드)**: 벡터 컬럼을 생성 컬럼으로 선언하면, 앱은 텍스트만 넣고 텍스트로 검색합니다.
+
+```sql
+-- 테이블 정의 (sql/schema.sql)
+summary_vec VECTOR(1024) GENERATED ALWAYS AS (EMBED_TEXT(
+  "tidbcloud_free/cohere/embed-multilingual-v3", summary, '...')) STORED,
+VECTOR INDEX idx_opp_vec ((VEC_COSINE_DISTANCE(summary_vec)))
+
+-- 쓰기: 벡터를 넣지 않습니다
+INSERT INTO opportunities (title, summary, ...) VALUES (%s, %s, ...);
+
+-- 읽기: 질의 문장을 텍스트로 넘깁니다
+SELECT ... ORDER BY VEC_EMBED_COSINE_DISTANCE(summary_vec, '변동성이 낮은 스테이블코인 이자 수익') LIMIT 10;
+```
+
+**PostgreSQL + pgvector (같은 일을 하는 일반적인 코드)**: 앱이 임베딩 API를 직접 부르고, 원문이 바뀔 때마다 다시 임베딩해야 합니다.
+
+```python
+# 쓰기: 임베딩 API 호출 → 벡터와 함께 저장
+vec = embeddings.create(model=..., input=summary)
+cur.execute("INSERT INTO opportunities (title, summary, summary_vec) VALUES (%s, %s, %s)", (title, summary, vec))
+# 수정: summary가 바뀌면 다시 임베딩 (빠뜨리면 원문과 벡터가 어긋남)
+# 읽기: 질의 문장도 먼저 임베딩
+qvec = embeddings.create(model=..., input=intent)
+cur.execute("SELECT ... ORDER BY summary_vec <=> %s LIMIT 10", (qvec,))
+```
+
+- TiDB는 원문과 벡터가 **같은 행, 같은 트랜잭션**에서 함께 바뀌므로 둘이 어긋날 수 없습니다. 임베딩 API 키, 재시도·배치 처리, 백필 작업도 앱에 없습니다.
+- PostgreSQL에서 이를 자동화하려면 pgai Vectorizer 같은 워커를 추가로 운영해야 합니다.
+
+### 7.2 하이브리드 검색: 질의 임베딩까지 SQL 안에서
+
+이 데모의 추천 검색([core/recommender.py](../core/recommender.py)의 `HYBRID_SQL`)은 SQL 한 번으로 다음을 모두 처리합니다.
+- 질의 문장 임베딩과 벡터 유사도: `VEC_EMBED_COSINE_DISTANCE(o.summary_vec, %(intent)s)`
+- 보유 자산 JOIN, 사용자 거래소 계정이 지원하는 위치(서브쿼리), 리스크 한도, 작업 공간 조건
+
+앱은 LLM이 만든 검색 의도 문장을 텍스트 그대로 넘깁니다. ⑤ SQL Inspector에서 "추천: 하이브리드 검색"으로 실제 SQL을 볼 수 있습니다.
+
+### 7.3 같은 DB에서 분석 (HTAP)
+
+TiDB는 같은 데이터를 행 저장(TiKV)과 열 저장(TiFlash)에 함께 두고, 옵티마이저가 쿼리마다 알맞은 쪽을 고릅니다. 이 데모 DB의 `opportunities`에는 벡터 인덱스를 위해 TiFlash 복제본이 이미 있고, 집계 쿼리는 TiFlash에서 MPP로 실행됩니다. 다음은 이 데모 DB에서 실제로 실행한 결과입니다(2026-10-30, Projection 연산자는 생략).
+
+```sql
+EXPLAIN SELECT o.chain, COUNT(*), AVG(o.expected_apy) FROM opportunities o GROUP BY o.chain;
+```
+
+```
+TableReader
+└─ExchangeSender          mpp[tiflash]
+  └─HashAgg               mpp[tiflash]
+    └─ExchangeReceiver    mpp[tiflash]
+      └─ExchangeSender    mpp[tiflash]
+        └─HashAgg         mpp[tiflash]
+          └─TableFullScan mpp[tiflash]
+```
+
+- 같은 시각 추천·승인 같은 업무 쓰기는 TiKV에서 처리됩니다. 분석용 복사본을 만들거나 ETL을 돌리지 않습니다.
+- 다른 테이블도 `ALTER TABLE ... SET TIFLASH REPLICA 1` 한 줄이면 열 저장 복제본이 생기고, 이후 쓰기가 자동으로 반영됩니다. 예를 들어 월말 잔고 테이블(`balance_snapshots`)에 복제본을 두면, 거래소 수 × 사용자 수 × 월말 잔고 집계를 사용자가 늘어도 업무 DB에서 바로 계산할 수 있습니다. 이 데모는 데이터가 작아 TiKV에서 집계합니다.
+- PostgreSQL은 무거운 분석을 업무 DB에서 돌리면 쓰기와 자원을 다툽니다. 그래서 보통 읽기 복제본이나 별도 분석 DB와 ETL을 둡니다.
+
+### 7.4 확장
+
+- **TiDB**: SQL 계산 계층(TiDB 서버, 상태 없음), 행 저장(TiKV), 열 저장(TiFlash)을 **각각 따로, 서비스 중단 없이** 늘립니다. 데이터는 Region 단위로 자동 분할·재분배되므로, 사용자와 원문이 늘어도 애플리케이션과 스키마를 바꾸지 않습니다. Starter는 이 확장을 자동으로 하고 사용량(Request Unit)만큼 과금합니다.
+- **PostgreSQL**: 기본은 단일 쓰기 노드의 수직 확장과 읽기 복제본입니다. 쓰기를 여러 노드로 나누려면 Citus 같은 확장으로 분산 키를 정하고 테이블·쿼리를 그에 맞게 다시 설계해야 합니다. JOIN이 많은 이 데모의 하이브리드 검색은 분산 키 선택의 영향을 크게 받습니다.
+
+### 7.5 운영할 구성 요소 수
+
+이 데모와 같은 기능을 각 스택으로 만들 때 운영해야 하는 것입니다.
+
+| 기능 | PostgreSQL 기반 | TiDB + mem9 |
+|---|---|---|
+| 업무 데이터 (사용자·자산·거래소·추천·주문) | PostgreSQL | TiDB |
+| 벡터 저장·검색 | pgvector (같은 DB) | TiDB (같은 DB) |
+| 임베딩 생성 | 앱 코드 또는 임베딩 워커 + 임베딩 API 키 | TiDB Auto Embedding |
+| 분석 (월말 잔고 집계 등) | 읽기 복제본 또는 분석 DB + ETL | TiDB (TiFlash) |
+| agent 상태 (LangGraph 체크포인트) | PostgreSQL | TiDB |
+| 사용자 장기 기억 | 별도 메모리 서비스 + 저장소(벡터 DB 등) | mem9 (TiDB 기반) |
+| **운영 대상** | **3~5개 시스템과 그 사이의 동기화** | **TiDB Cloud + mem9** |
+
+- 구성 요소가 줄면 시스템 사이 데이터 정합성(원문과 벡터, 업무 DB와 분석 DB) 문제가 함께 줄어듭니다.
+
+### 7.6 PostgreSQL로 충분한 경우
+
+데이터와 트래픽이 단일 노드에 충분히 들어가고, 분석이 가벼우며, 임베딩 대상이 거의 바뀌지 않는다면 PostgreSQL + pgvector로도 충분합니다. TiDB + mem9의 이점은 **사용자·원문·기억이 늘어나고, 같은 데이터로 실시간 분석까지 해야 할 때** 커집니다.
+
+**정리**: 사용자와 시그널이 늘어날수록 PostgreSQL 구성은 벡터 파이프라인, 분석 DB, 메모리 저장소가 추가되며 시스템이 쪼개집니다. TiDB + mem9는 같은 기능을 **하나의 데이터 플랫폼**에서 처리해 운영 부담과 데이터 정합성 문제를 줄입니다.
 
 ---
 

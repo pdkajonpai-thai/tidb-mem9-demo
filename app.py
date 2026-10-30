@@ -100,7 +100,7 @@ with st.sidebar:
                 finally:
                     lock.release()
                 for key in list(st.session_state):
-                    if key not in ("user_id", "lang", "reset_popover") and not key.startswith("_audit"):
+                    if key not in ("user_id", "_lang", "lang_choice", "reset_popover") and not key.startswith("_audit"):
                         del st.session_state[key]
                 st.session_state["_reset_done"] = True
                 st.rerun()

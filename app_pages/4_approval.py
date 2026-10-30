@@ -1,12 +1,10 @@
 """④ 승인 & 실행: 실행 agent가 호출한 execute_order tool의 승인 대기 → 승인/거절 → 엔진 실행 결과."""
-import json
-
 import streamlit as st
 
 from core.db import get_db
 from core.engine_mock import route
-from ui.common import (current_user, current_workspace, decide_order, localized, memory_job_panel, thread_snapshot,
-                       waiting_threads)
+from ui.common import (command_flow_panel, current_user, current_workspace, decide_order, localized, memory_job_panel,
+                       thread_snapshot, waiting_threads)
 from ui.i18n import columns, krw, t
 
 user = current_user()
@@ -21,15 +19,6 @@ for thread_id, snap, approval in orders:
         title, note = localized([approval["title"], approval["note"]])
         st.markdown(f"#### {title}")
         st.markdown(t("p4.note", note=note))
-
-        calls = [c for m in snap.values.get("messages", []) for c in getattr(m, "tool_calls", None) or []]
-        if calls:
-            with st.expander(t("p4.tool_call")):
-                call = calls[-1]
-                st.code(f"{call['name']}(\n  note={call['args'].get('note')!r},\n"
-                        f"  steps={json.dumps(call['args'].get('steps'), ensure_ascii=False, indent=2)}\n)",
-                        language="python")
-                st.caption(t("p4.tool_caption"))
 
         sim = approval["simulation"]
         with st.container(horizontal=True):
@@ -53,8 +42,7 @@ for thread_id, snap, approval in orders:
                      for i, s in enumerate(cmd["steps"])]),
             hide_index=True, alt=t("p4.steps_alt"))
         st.caption(t("p4.command_caption", id=cmd["command_id"], slip=cmd["max_slippage_bps"], exp=cmd["expires_at"]))
-        with st.expander(t("p4.command_json")):
-            st.json(cmd)
+        command_flow_panel(snap.values, approval)      # 원문 → JSON → 엔진 명령 (기본 접힘)
 
         approve_col, reject_col = st.columns(2)
         with approve_col:
@@ -80,6 +68,9 @@ if thread_id := st.session_state.get("last_decision"):
             st.markdown(t("p4.just_done"))
             if order := state.get("order"):
                 st.success(t("p4.filled", id=order["order_id"], status=order["status"], tx=order["tx_hash"][:18]))
+                st.markdown(t("p4.engine_response"))
+                st.json({"order_id": str(order["order_id"]), "status": order["status"], "tx_hash": order["tx_hash"],
+                         "status_history": ["PENDING", "SUBMITTED", "CONFIRMED"]}, expanded=False)
             last = state["messages"][-1] if state.get("messages") else None
             if last is not None and getattr(last, "content", None):
                 content = last.content if isinstance(last.content, str) else \

@@ -1,7 +1,7 @@
 """한·영 문구 사전과 언어 도구.
 
 - 고정 문구: t("key", **fmt). 두 언어의 내용은 같다.
-- 언어 값은 사이드바·로그인 화면의 토글(key="lang")이 session_state와 URL(?lang=en)에 둔다.
+- 언어 값은 session_state["_lang"]에 두고, 사이드바·로그인 화면의 토글이 바꾸며 URL(?lang=English)에도 맞춘다.
 - 저장된 내용·다른 언어로 만든 AI 결과는 ui.common.localized()가 화면에서 번역한다.
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ LANGS = ("ko", "en")
 # 토글 선택지 = URL 값. 공유 링크는 ?lang=English
 OPTIONS = {"한국어": "ko", "English": "en"}
 OPTION_OF = {v: k for k, v in OPTIONS.items()}
+LANG_KEY = "_lang"          # 선택한 언어 (위젯이 아닌 값이라 페이지를 옮겨도 지워지지 않는다)
 
 
 def default_lang() -> str:
@@ -24,20 +25,26 @@ def default_lang() -> str:
 def lang() -> str:
     # 토글이 그려지기 전(메뉴·사이드바 제목)에도 공유 링크의 ?lang= 값을 따르도록 URL을 함께 본다
     try:
-        value = st.session_state.get("lang") or st.query_params.get("lang")
+        value = st.session_state.get(LANG_KEY) or st.query_params.get("lang")
     except Exception:
         value = None
     return OPTIONS.get(value) or default_lang()
 
 
+def _keep_choice() -> None:
+    st.session_state[LANG_KEY] = st.session_state["lang_choice"]
+
+
 def lang_toggle() -> None:
-    # bind="query-params"를 쓰면 URL의 lang을 지울 수 없어 st.switch_page가 실패한다.
-    # 그래서 처음 들어올 때 URL 값으로 시작하고, 이후에는 선택 값을 URL에 직접 맞춰 둔다.
-    if st.session_state.get("lang") not in OPTIONS:
-        st.session_state["lang"] = OPTION_OF[lang()]
-    st.segmented_control("언어 / Language", list(OPTIONS), required=True, key="lang")
-    if st.query_params.get("lang") != st.session_state["lang"]:
-        st.query_params["lang"] = st.session_state["lang"]
+    # bind="query-params"를 쓰면 URL의 lang을 지울 수 없어 st.switch_page가 실패하고,
+    # 위젯 key에 둔 값은 st.switch_page로 페이지를 옮길 때 지워진다.
+    # 그래서 언어는 위젯 밖(LANG_KEY)에 두고, 위젯은 매번 그 값으로 그린 뒤 URL에도 맞춘다.
+    if st.session_state.get(LANG_KEY) not in OPTIONS:
+        st.session_state[LANG_KEY] = OPTION_OF[lang()]
+    st.session_state["lang_choice"] = st.session_state[LANG_KEY]
+    st.segmented_control("언어 / Language", list(OPTIONS), required=True, key="lang_choice", on_change=_keep_choice)
+    if st.query_params.get("lang") != st.session_state[LANG_KEY]:
+        st.query_params["lang"] = st.session_state[LANG_KEY]
 
 
 def t(key: str, **fmt) -> str:
@@ -143,6 +150,9 @@ T: dict[str, tuple[str, str]] = {
     "status.REJECTED": ("거절", "Rejected"),
     "status.SKIPPED": ("선택 안 함", "Not selected"),
     "status.FAILED": ("실패", "Failed"),
+    "route.exchange_api": ("거래소 API", "Exchange API"),
+    "route.onchain": ("온체인", "On-chain"),
+    # 이전 버전이 체크포인트에 남긴 경로 값 (승인 대기 중이던 주문 표시용)
     "route.거래소 API": ("거래소 API", "Exchange API"),
     "route.온체인": ("온체인", "On-chain"),
     "region.GLOBAL": ("해외 거래소", "Overseas exchange"),
@@ -326,7 +336,6 @@ T: dict[str, tuple[str, str]] = {
                 "No orders are waiting for approval. Select 'Request execution' on a recommendation in "
                 "'Personalized recommendations'."),
     "p4.note": ("**주문 요약** · {note}", "**Order summary** · {note}"),
-    "p4.tool_call": ("실행 agent의 tool 호출 (엔진 API)", "Execution agent's tool call (engine API)"),
     "p4.tool_caption": ("tool 안에서 검증과 엔진 시뮬레이션을 마친 뒤, 사람의 승인을 기다리며 멈춰 있습니다 "
                         "(LangGraph interrupt). 체크포인트가 TiDB에 있어 새로고침·재접속해도 이 화면이 유지됩니다.",
                         "Inside the tool, validation and the engine simulation are done, and it is paused waiting "
@@ -346,7 +355,60 @@ T: dict[str, tuple[str, str]] = {
     "p4.steps_alt": ("주문 실행 단계", "Order execution steps"),
     "p4.command_caption": ("명령 ID `{id}` · 최대 슬리피지 {slip}bps · 만료 {exp}",
                            "Command ID `{id}` · max slippage {slip} bps · expires {exp}"),
-    "p4.command_json": ("ExecutionCommand (엔진에 전달될 JSON)", "ExecutionCommand (JSON sent to the engine)"),
+    "p4.flow": ("AI가 이 주문을 엔진 명령으로 만든 과정 (Structured Output)",
+                "How the AI turned this into an engine command (Structured Output)"),
+    "p4.flow_intro": ("투자 정보가 스키마로 정해진 JSON을 거쳐 엔진 명령이 되기까지입니다. LLM 출력은 Pydantic 스키마로 "
+                      "형식을 강제하고, 앱이 사용자 데이터로 검증한 뒤 식별 정보를 채워 기존 자동화 엔진의 API로 넘깁니다.",
+                      "How investment information becomes an engine command through schema-defined JSON. LLM output "
+                      "is forced into Pydantic schemas, the app validates it against the user's data, fills in the "
+                      "identifiers, and hands it to the existing automation engine's API."),
+    "p4.by_llm": ("LLM · Structured Output", "LLM · structured output"),
+    "p4.by_app": ("앱", "App"),
+    "p4.by_engine": ("엔진 API", "Engine API"),
+    "p4.flow_1": ("원문 신호", "Source signal"),
+    "p4.flow_1_caption": ("TiDB `raw_signals` #{id} · {source} · {author}", "TiDB `raw_signals` #{id} · {source} · {author}"),
+    "p4.flow_2": ("투자 기회 JSON · `Opportunity` 스키마", "Opportunity JSON · `Opportunity` schema"),
+    "p4.flow_2_caption": ("분석 그래프가 원문에서 추출해 TiDB `opportunities`에 저장했습니다. summary는 TiDB가 자동으로 임베딩합니다.",
+                          "The analysis graph extracted this from the post and saved it to TiDB `opportunities`. "
+                          "TiDB embeds the summary automatically."),
+    "p4.flow_3": ("AI 주문 초안 · `CommandDraft` 스키마", "Order draft · `CommandDraft` schema"),
+    "p4.flow_3_caption": ("추천 그래프가 사용자의 보유 자산·거래소 계정에 맞춰 만든 실행 단계입니다. 생성 {n}회 "
+                          "(검증에 실패하면 오류를 알려 주고 다시 생성).",
+                          "Execution steps the recommendation graph built for this user's holdings and exchange "
+                          "accounts. Generated {n} time(s); if validation fails, the errors are sent back and it "
+                          "regenerates."),
+    "p4.flow_4": ("앱 검증", "App validation"),
+    "p4.flow_4_caption": ("LLM이 만든 단계를 그대로 믿지 않고, TiDB의 사용자 데이터로 다시 확인합니다.",
+                          "The app doesn't trust the LLM's steps as-is; it re-checks them against the user's data "
+                          "in TiDB."),
+    "p4.flow_checks": ("- ✓ 입력 자산을 보유하고 있고, 사용량 합계가 보유 수량 이하\n"
+                       "- ✓ 모든 단계가 기회와 같은 위치(체인 또는 거래소 계정)\n"
+                       "- ✓ 실행할 거래소·프로토콜에 사용자 계정이 있고 그 위치를 지원\n"
+                       "- ✓ 슬리피지가 한도({max}bps) 이내",
+                       "- ✓ The user holds the input asset, and the total used is within the holding\n"
+                       "- ✓ Every step is at the opportunity's location (chain or exchange account)\n"
+                       "- ✓ The user has an account on the exchange or protocol, and it supports that location\n"
+                       "- ✓ Slippage is within the limit ({max} bps)"),
+    "p4.flow_check_lp": ("- ✓ LP는 swap → deposit 두 단계이고 두 수량이 같음",
+                         "- ✓ LP is two steps, swap → deposit, with equal amounts"),
+    "p4.flow_5": ("실행 agent의 tool 호출 · `execute_order`", "Execution agent's tool call · `execute_order`"),
+    "p4.flow_5_caption": ("실행 agent가 초안을 받아 tool 인자(JSON)로 호출했습니다. 호출 {n}회 "
+                          "(tool이 검증 오류를 돌려주면 고쳐서 다시 호출).",
+                          "The execution agent took the draft and called the tool with JSON arguments. Called {n} "
+                          "time(s); if the tool returns validation errors, the agent fixes them and calls again."),
+    "p4.flow_6": ("엔진 명령 · `ExecutionCommand`", "Engine command · `ExecutionCommand`"),
+    "p4.flow_6_caption": ("앱이 명령 ID·사용자·전략·만료 시각·승인 필요 여부를 채운 최종 계약입니다. "
+                          "승인하면 화면에 보이는 이 JSON이 그대로 엔진에 제출됩니다.",
+                          "The final contract, with the command ID, user, strategy, expiry, and approval flag "
+                          "filled in by the app. On approval, exactly this JSON is submitted to the engine."),
+    "p4.flow_schema": ("엔진 계약 (JSON Schema) · 기존 엔진은 이 형식만 받으면 됩니다",
+                       "Engine contract (JSON Schema) · the existing engine only needs to accept this format"),
+    "p4.flow_7": ("엔진 시뮬레이션 응답", "Engine simulation response"),
+    "p4.flow_7_caption": ("`POST /v1/orders/simulate` · 주문을 보내지 않고 예상 체결량·수수료·연 수익을 계산했습니다. "
+                          "승인하면 `POST /v1/orders`로 제출됩니다.",
+                          "`POST /v1/orders/simulate` · estimated fills, fees, and yearly return without placing "
+                          "the order. On approval, it is submitted with `POST /v1/orders`."),
+    "p4.engine_response": ("**엔진 응답** · `POST /v1/orders`", "**Engine response** · `POST /v1/orders`"),
     "p4.approve": ("승인하고 실행", "Approve and execute"),
     "p4.approve_reason": ("고른 이유 (선택, mem9 기억으로 남습니다)", "Why you chose this (optional, saved as a mem9 memory)"),
     "p4.approve_reason_ph": ("예: 언제든 인출할 수 있는 안정적인 이자가 좋아요",
@@ -389,6 +451,7 @@ T: dict[str, tuple[str, str]] = {
     # ⑤ Behind the scenes
     "p5.tab_sql": ("SQL Inspector", "SQL Inspector"),
     "p5.tab_mem9": ("mem9 호출", "mem9 calls"),
+    "p5.tab_engine": ("엔진 호출", "Engine calls"),
     "p5.tab_graph": ("LangGraph", "LangGraph"),
     "p5.tab_arch": ("아키텍처", "Architecture"),
     "p5.sql_caption": ("내 작업 공간에서 TiDB에 보낸 SQL (최근 200개, 최신순). 벡터 검색과 관계형 조건이 한 SQL에 들어간 "
@@ -406,6 +469,19 @@ T: dict[str, tuple[str, str]] = {
                       "사용자 대시보드를 열거나 추천을 받으면 호출이 쌓입니다.",
                       "No calls yet. This log lives in server memory and is cleared when the app restarts "
                       "(for example, after a deploy). Open the user dashboard or get recommendations to add calls."),
+    "p5.engine_caption": ("내 작업 공간에서 실행 agent의 tool이 엔진 API로 보낸 요청 {n}건 (최신순). 기존 자동화 엔진이 "
+                          "들어갈 자리이며, 실제 연동할 때는 `core/engine_mock.py`만 바꿉니다.",
+                          "{n} requests the execution agent's tool sent to the engine API from your workspace (newest "
+                          "first). This is where the existing automation engine plugs in; a real integration only "
+                          "replaces `core/engine_mock.py`."),
+    "p5.engine_contract": ("**엔진 계약** · `ExecutionCommand` JSON Schema", "**Engine contract** · `ExecutionCommand` JSON Schema"),
+    "p5.engine_empty": ("아직 호출이 없습니다. 추천에서 '실행 요청'을 누르면 시뮬레이션 요청이, 승인하면 주문 요청이 쌓입니다. "
+                        "이 기록은 서버 메모리에 있어 앱이 재시작되면 비워집니다.",
+                        "No calls yet. 'Request execution' on a recommendation adds a simulation request, and "
+                        "approving adds an order request. This log lives in server memory and is cleared when the "
+                        "app restarts."),
+    "p5.engine_request": ("요청 본문", "Request body"),
+    "p5.engine_response": ("응답", "Response"),
     "p5.graph_title": ("**추천·승인 그래프** · 점선은 조건 분기, `choose`와 `tools`(execute_order) 안에서 사람을 기다립니다",
                        "**Recommendation and approval graph** · dotted lines are conditional; it waits for a "
                        "person in `choose` and inside `tools` (execute_order)"),
@@ -419,13 +495,14 @@ T: dict[str, tuple[str, str]] = {
                     "agent, execution engine"),
     "p5.arch_bullets": ("- **TiDB**: 업무 데이터, 벡터(Auto Embedding), LangGraph 체크포인트, 접속 기록을 한 DB에서 처리합니다.\n"
                         "- **mem9**: 사용자별 장기 기억입니다. 자체 저장소도 TiDB입니다.\n"
-                        "- **실행 agent**: 엔진 API를 tool로 호출하지만, 승인은 tool 코드 안에서 강제합니다. "
-                        "엔진은 거래소 API 주문과 온체인 주문을 모두 받습니다.",
+                        "- **실행 agent**: AI가 만든 주문을 JSON 명령(`ExecutionCommand`)으로 엔진 API에 넘깁니다. "
+                        "승인은 tool 코드 안에서 강제하고, 엔진은 거래소 API 주문과 온체인 주문을 모두 받습니다.",
                         "- **TiDB**: business data, vectors (Auto Embedding), LangGraph checkpoints, and the "
                         "access log in one database.\n"
                         "- **mem9**: long-term memory per user. Its own storage is also TiDB.\n"
-                        "- **Execution agent**: calls the engine API as a tool, but approval is enforced inside "
-                        "the tool code. The engine accepts both exchange API orders and on-chain orders."),
+                        "- **Execution agent**: passes the AI-built order to the engine API as a JSON command "
+                        "(`ExecutionCommand`). Approval is enforced inside the tool code, and the engine accepts "
+                        "both exchange API orders and on-chain orders."),
 
     # ⑥ 접속 기록
     "p6.users": ("고유 사용자", "Unique users"),
