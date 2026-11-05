@@ -7,8 +7,10 @@ ARCHITECTURE.md 2.4.2절 참고.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated, Any
@@ -18,11 +20,11 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
 
-from core import engine_mock, memory_jobs
+from core import engine_mock, memory_jobs, translations
 from core.config import get_settings
 from core.db import get_db
 from core.llm import get_llm, output_language_rule, structured
-from core.mem9_client import get_mem9, user_app_id
+from core.mem9_client import get_mem9, trimmed, user_app_id
 from core.overseas import overseas_locations, overseas_status
 from core.schemas import ExecutionCommand, ExecutionStep, ExtractedFacts, RecommendationSet, SearchIntent
 
@@ -173,34 +175,44 @@ def candidates_prompt(candidates: list[dict]) -> str:
 
 # ---- 노드 ----
 
+def load_memories(app_id: str) -> tuple[list[dict], dict]:
+    """추천에 쓸 기억 전체와 mem9 첫 페이지 응답(화면의 원본 응답 보기용)."""
+    # 직전 승인·거절의 기억 정리가 뒤에서 진행 중이면 끝나기를 기다린다 (2회차가 새 기억을 반영하도록)
+    memory_jobs.wait_pending(app_id, timeout=INSIGHT_WAIT_SECONDS + 10)
+    # q 검색은 단어 일치 방식이라 쓰지 않고 전체 목록을 가져온다 (ARCHITECTURE.md 1.2)
+    memories, first = get_mem9().list_all(app_id)
+    return [m for m in memories if m["memory_type"] in ("pinned", "insight")], first
+
+
 def recall_memory(state: dict) -> dict:
     db = get_db()
     uid = state["user_id"]
-    profile = db.query("SELECT id, name, risk_profile, max_risk_level, base_currency FROM users WHERE id = %s",
-                       (uid,), label="추천: 사용자 프로필")[0]
-    holdings = db.query(
-        "SELECT asset_symbol, chain, amount, usd_value FROM user_holdings WHERE user_id = %s ORDER BY usd_value DESC",
-        (uid,), label="추천: 보유 자산")
-    exchanges = db.query(
-        """
-        SELECT e.name, e.type, GROUP_CONCAT(ec.chain ORDER BY ec.chain SEPARATOR ', ') AS chains
-        FROM user_exchange_accounts ua
-        JOIN exchanges e        ON e.id = ua.exchange_id
-        JOIN exchange_chains ec ON ec.exchange_id = e.id
-        WHERE ua.user_id = %s AND ua.status = 'ACTIVE'
-        GROUP BY e.id, e.name, e.type
-        """, (uid,), label="추천: 거래소 계정")
-    # 직전 승인·거절의 기억 정리가 뒤에서 진행 중이면 끝나기를 기다린다 (2회차가 새 기억을 반영하도록)
-    memory_jobs.wait_pending(user_app_id(uid, state["workspace"]), timeout=INSIGHT_WAIT_SECONDS + 10)
-    # q 검색은 단어 일치 방식이라 쓰지 않고 전체 목록을 가져온다 (ARCHITECTURE.md 1.2)
-    memories = [m for m in get_mem9().list_memories(user_app_id(uid, state["workspace"]))
-                if m["memory_type"] in ("pinned", "insight")]
+    # mem9 조회(기억 정리 대기 포함)를 아래 SQL과 동시에 진행한다. 작업 공간(ContextVar)을 넘겨 호출 기록이 제자리에 남게 한다
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        recalled = pool.submit(contextvars.copy_context().run, load_memories,
+                               user_app_id(uid, state["workspace"]))
+        profile = db.query("SELECT id, name, risk_profile, max_risk_level, base_currency FROM users WHERE id = %s",
+                           (uid,), label="추천: 사용자 프로필")[0]
+        holdings = db.query(
+            "SELECT asset_symbol, chain, amount, usd_value FROM user_holdings WHERE user_id = %s ORDER BY usd_value DESC",
+            (uid,), label="추천: 보유 자산")
+        exchanges = db.query(
+            """
+            SELECT e.name, e.type, GROUP_CONCAT(ec.chain ORDER BY ec.chain SEPARATOR ', ') AS chains
+            FROM user_exchange_accounts ua
+            JOIN exchanges e        ON e.id = ua.exchange_id
+            JOIN exchange_chains ec ON ec.exchange_id = e.id
+            WHERE ua.user_id = %s AND ua.status = 'ACTIVE'
+            GROUP BY e.id, e.name, e.type
+            """, (uid,), label="추천: 거래소 계정")
+        memories, response = recalled.result()
     return plain({
         "profile": profile,
         "holdings": holdings,
         "exchanges": exchanges,
         "memories": [{k: m.get(k) for k in ("id", "content", "memory_type", "tags", "created_at")}
                      for m in memories],
+        "memories_response": trimmed(response),
     })
 
 
@@ -278,22 +290,23 @@ def no_result(state: dict) -> dict:
 
 
 def save_recommendations(state: dict) -> dict:
+    # 카드 3개를 한 번에 넣고(여러 행 INSERT) 만들어진 ID를 순위로 다시 읽는다: DB 왕복 2번
     db = get_db()
     model = get_settings().llm_model
-    cards = []
-    for c in state["cards"]:
-        rec_id = db.execute(
-            """
-            INSERT INTO recommendations
-              (workspace, user_id, opportunity_id, thread_id, `rank`, rationale, memory_refs, command, model)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (state["workspace"], state["user_id"], c["opportunity_id"], state["thread_id"], c["rank"], c["rationale"],
-             json.dumps([m["id"] for m in c["memory_refs"]]),
-             json.dumps({"proposed_steps": c["proposed_steps"]}, ensure_ascii=False), model),
-            label="추천: 추천 저장 (AWAITING_APPROVAL)")
-        cards.append({**c, "recommendation_id": rec_id})
-    return {"cards": cards}
+    db.executemany(
+        """
+        INSERT INTO recommendations
+          (workspace, user_id, opportunity_id, thread_id, `rank`, rationale, memory_refs, command, model)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        [(state["workspace"], state["user_id"], c["opportunity_id"], state["thread_id"], c["rank"], c["rationale"],
+          json.dumps([m["id"] for m in c["memory_refs"]]),
+          json.dumps({"proposed_steps": c["proposed_steps"]}, ensure_ascii=False), model) for c in state["cards"]],
+        label="추천: 추천 저장 (AWAITING_APPROVAL)")
+    ids = {r["rank"]: r["id"] for r in db.query(
+        "SELECT id, `rank` FROM recommendations WHERE thread_id = %s", (state["thread_id"],),
+        label="추천: 저장한 추천 ID")}
+    return {"cards": [{**c, "recommendation_id": ids[c["rank"]]} for c in state["cards"]]}
 
 
 # ---- 실행할 추천 선택 ----
@@ -352,7 +365,8 @@ def remember_decision(job: memory_jobs.Job, state: dict, card: dict, approve: bo
                       order: dict | None = None) -> None:
     """결정을 mem9에 기록한다 (memory_jobs 백그라운드 작업). 단계는 job.step으로 남겨 화면 타임라인에 보인다.
 
-    순서: 이유 ingest → insight 대기(또는 Claude 대체 추출) → 결정 기록(pinned) → 체결 기록(승인 시).
+    순서: 이유 ingest → insight 대기(또는 Claude 대체 추출) → 결정 기록(pinned) → 체결 기록(승인 시)
+    → 새 기억의 두 언어 번역을 캐시에 미리 저장(별도 백그라운드).
     결정 기록에도 이유가 들어가므로, 먼저 저장하면 mem9가 같은 내용으로 보고 추출을 건너뛸 수 있다.
     """
     mem9 = get_mem9()
@@ -404,6 +418,10 @@ def remember_decision(job: memory_jobs.Job, state: dict, card: dict, approve: bo
         saved = mem9.add_pinned(app_id, text, tags=["execution"], metadata={"tx_hash": order["tx_hash"]})
         job.events.append({"kind": "execution", "content": text, "id": saved.get("id")})
         job.step("execution_saved", text=text)
+
+    # 새 기억을 두 언어로 미리 번역해 둔다. mem9 insight는 영어로 저장되므로, 다음 추천 화면이 번역을 기다리지 않게 한다.
+    # 다음 추천의 기억 조회(wait_pending)가 번역까지 기다리지 않도록 작업 밖에서 돌린다
+    memory_jobs.run_later(translations.prepare, [e["content"] for e in job.events])
 
 
 @tool

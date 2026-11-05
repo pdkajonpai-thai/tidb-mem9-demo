@@ -84,6 +84,22 @@ def submit(app_id: str, fn: Callable[[Job], None]) -> str:
     return job.id
 
 
+def run_later(fn: Callable[..., Any], *args: Any) -> None:
+    """기다릴 필요가 없는 뒷정리(미리 번역 등)를 백그라운드에서 실행한다. wait_pending은 이 작업을 기다리지 않는다."""
+    ctx = contextvars.copy_context()
+
+    def run() -> None:
+        try:
+            ctx.run(fn, *args)
+        except Exception:
+            logger.warning("백그라운드 뒷정리 실패 (%s)", getattr(fn, "__name__", fn), exc_info=True)
+
+    try:
+        _executor.submit(run)
+    except RuntimeError:        # 프로세스 종료 중(스크립트 끝)에는 뒷정리를 건너뛴다
+        pass
+
+
 def get(job_id: str | None) -> Job | None:
     with _lock:
         return _jobs.get(job_id) if job_id else None

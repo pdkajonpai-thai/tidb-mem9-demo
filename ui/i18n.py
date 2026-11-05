@@ -181,6 +181,13 @@ T: dict[str, tuple[str, str]] = {
     "col.analyzed": ("분석", "Analyzed"),
     "col.content": ("내용", "Content"),
     "col.kind": ("구분", "Kind"),
+    "col.node": ("노드", "Node"),
+    "col.does": ("하는 일", "What it does"),
+    "col.reads": ("읽는 state", "Reads"),
+    "col.writes": ("쓰는 state", "Writes"),
+    "col.next": ("다음", "Next"),
+    "col.phase": ("구간", "Phase"),
+    "col.ms": ("걸린 시간", "Time"),
     "col.amount": ("수량", "Amount"),
     "col.usd_value": ("평가액(USD)", "Value (USD)"),
     "col.exchange": ("거래소", "Exchange"),
@@ -280,6 +287,11 @@ T: dict[str, tuple[str, str]] = {
                         "For information only. Confirm whether and how to report with a tax professional."),
 
     # ③ 추천
+    "p3.raw_response": ("mem9 원본 응답 보기 (JSON)", "Show raw mem9 response (JSON)"),
+    "p3.raw_caption": ("GET /v1alpha2/mem9s/memories 응답 그대로입니다. 전체 {total}개 중 {n}개를 보여 줍니다. state, version은 "
+                       "mem9가 기억을 조정할 때 쓰는 필드입니다.",
+                       "The GET /v1alpha2/mem9s/memories response as returned, showing {n} of {total}. state and version are "
+                       "the fields mem9 uses when it reconciles memories."),
     "p3.no_opps": ("투자 기회가 없습니다. 먼저 'Signal 분석'에서 AI 분석을 실행해 주세요.",
                    "There are no opportunities yet. Run the AI analysis on 'Signal analysis' first."),
     "p3.pending_order": ("승인을 기다리는 주문이 있습니다.", "An order is waiting for approval."),
@@ -323,6 +335,8 @@ T: dict[str, tuple[str, str]] = {
     "stream.intent": ("검색 의도: {x}", "Search intent: {x}"),
     "stream.candidates": ("후보 {n}개", "{n} candidates"),
     "stream.memo": ("AI 검토 메모 (모델 추론 요약, 영문): …{x}", "AI review notes (model reasoning summary): …{x}"),
+    "stream.rejected": ("거절을 기록했습니다. 사유는 mem9 기억 정리에서 뒤이어 처리합니다.",
+                        "Rejection recorded. The reason is processed next by mem9 memory organizing."),
     "status.building": ("추천을 만드는 중…", "Building recommendations…"),
     "status.built": ("추천 완료", "Recommendations ready"),
     "status.calling_tool": ("실행 agent가 엔진 tool을 호출하는 중…", "The execution agent is calling the engine tool…"),
@@ -453,6 +467,7 @@ T: dict[str, tuple[str, str]] = {
     "p5.tab_mem9": ("mem9 호출", "mem9 calls"),
     "p5.tab_engine": ("엔진 호출", "Engine calls"),
     "p5.tab_graph": ("LangGraph", "LangGraph"),
+    "p5.tab_explain": ("기술 설명", "Tech notes"),
     "p5.tab_arch": ("아키텍처", "Architecture"),
     "p5.sql_caption": ("내 작업 공간에서 TiDB에 보낸 SQL (최근 200개, 최신순). 벡터 검색과 관계형 조건이 한 SQL에 들어간 "
                        "'추천: 하이브리드 검색'이 핵심입니다. 체크포인터 내부 SQL은 포함하지 않습니다.",
@@ -481,6 +496,27 @@ T: dict[str, tuple[str, str]] = {
                         "approving adds an order request. This log lives in server memory and is cleared when the "
                         "app restarts."),
     "p5.engine_request": ("요청 본문", "Request body"),
+    "p5.mem9_request": ("요청 (쿼리 파라미터, 본문)", "Request (query parameters, body)"),
+    "p5.only_reads": ("기억 조회(GET)만 보기", "Show memory reads (GET) only"),
+    "p5.no_body": ("응답 본문 없음", "No response body"),
+    "p5.visited_caption": ("색칠된 노드: 최근 추천 스레드가 실제로 지나간 노드", "Filled nodes: nodes the latest recommendation thread actually ran"),
+    "p5.nodes_title": ("**노드 설명** (실선은 항상 가는 엣지, 점선은 조건 엣지)",
+                       "**Nodes** (solid lines always run next, dotted lines are conditional edges)"),
+    "p5.timing_title": ("**최근 추천 스레드의 노드별 시간**", "**Time per node in the latest recommendation thread**"),
+    "p5.timing_empty": ("이 스레드의 실행 기록이 없습니다. 추천을 새로 받으면 노드별 시간이 쌓입니다. 이 기록은 서버 메모리에 "
+                        "있어 앱이 재시작되면 비워집니다.",
+                        "No run record for this thread. Get a new recommendation to record time per node. This log lives "
+                        "in server memory and is cleared when the app restarts."),
+    "p5.timing_total": ("{phase} {s:.1f}초", "{phase} {s:.1f}s"),
+    "p5.analysis_graph": ("**분석 그래프** (Send로 원문마다 analyze_signal을 동시에 실행)",
+                          "**Analysis graph** (Send runs analyze_signal for each signal at once)"),
+    "p5.analysis_graph_alt": ("원문 분석 LangGraph 그래프", "Signal analysis LangGraph graph"),
+    "p5.mem9_flow_alt": ("mem9 smart ingest 흐름: 사실 추출, 조정, 저장", "mem9 smart ingest flow: extraction, reconcile, storage"),
+    "p5.langgraph_flow_alt": ("LangGraph 실행 흐름: 스트림, 체크포인트, interrupt, 재개",
+                              "LangGraph execution flow: stream, checkpoints, interrupt, resume"),
+    "phase.recommend": ("추천", "Recommend"),
+    "phase.execute": ("실행 요청", "Request execution"),
+    "phase.decide": ("승인 또는 거절", "Approve or reject"),
     "p5.engine_response": ("응답", "Response"),
     "p5.graph_title": ("**추천·승인 그래프** · 점선은 조건 분기, `choose`와 `tools`(execute_order) 안에서 사람을 기다립니다",
                        "**Recommendation and approval graph** · dotted lines are conditional; it waits for a "
@@ -545,6 +581,7 @@ LABELS_EN = {
     "추천: 보유 자산": "Recommend: holdings",
     "추천: 사용자 프로필": "Recommend: user profile",
     "추천: 추천 저장 (AWAITING_APPROVAL)": "Recommend: save recommendations (AWAITING_APPROVAL)",
+    "추천: 저장한 추천 ID": "Recommend: saved recommendation IDs",
     "추천: 하이브리드 검색 (벡터 + 관계형)": "Recommend: hybrid search (vector + relational)",
     "해외 잔고: 월별 합계": "Overseas balance: monthly totals",
     "해외 잔고: 최근 월말 거래소별": "Overseas balance: latest month-end by exchange",

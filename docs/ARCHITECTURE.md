@@ -90,7 +90,7 @@ LIMIT 3;
 | API 키 발급 | `POST /v1alpha1/mem9s` | 없음 → 응답의 `id`가 API 키 |
 | 키 상태 확인 | `GET /v1alpha2/status` | — |
 | 기억 쓰기 | `POST /v1alpha2/mem9s/memories` | `content` 또는 `messages`(둘 중 하나), `appId`, `memory_type`, `tags`, `metadata`, `mode`(`smart`/`raw`), `sync` |
-| 기억 목록·검색 | `GET /v1alpha2/mem9s/memories` | `appId`, `memory_type`(`insight`/`pinned`/`session`), `tags`, `limit`, `q` |
+| 기억 목록·검색 | `GET /v1alpha2/mem9s/memories` | `appId`, `memory_type`(`insight`/`pinned`/`session`), `tags`, `limit`, `offset`, `q` (응답: `memories`, `total`, `limit`, `offset`) |
 | 단건 조회/수정/삭제 | `GET/PUT/DELETE /v1alpha2/mem9s/memories/{id}` | — |
 
 - **두 가지 쓰기 방식**
@@ -108,7 +108,27 @@ LIMIT 3;
 | 추출 안정성 | 같은 조건에서도 추출되지 않는 경우가 있음 | 15초 안에 `insight`가 없으면 Claude로 사실을 추출해 `pinned`로 저장 (대체 경로) |
 | 결정 기록 순서 | 사유가 담긴 결정 기록(pinned)을 **먼저** 저장하면, 영어 모드에서 추출이 연속 2회 일어나지 않음. 결정 기록과 사유 문장이 거의 같아 mem9가 기존 기억과 겹치는 내용으로 본 것으로 추정 | 사유 ingest → 추출 대기 → 결정 기록 순서로 바꿈. 바꾼 뒤 영어 1회·한국어 1회 모두 추출됨 (원인은 추정, 반복 검증은 아직) |
 
-- **Python SDK가 없으므로** `httpx`로 얇은 클라이언트(`core/mem9_client.py`)를 직접 작성했습니다. 모든 호출을 기록해 Behind the scenes 화면에 보여줍니다.
+- **Python SDK가 없으므로** `httpx`로 얇은 클라이언트(`core/mem9_client.py`)를 직접 작성했습니다. 모든 호출의 요청과 **응답 JSON**을 기록해 Behind the scenes 화면에 보여줍니다(목록 응답은 앞 20개만).
+
+#### 1.2.1 smart ingest의 압축·요약과 컨텍스트 손실
+
+출처는 mem9 GitHub 설계 문서 `docs/architecture/mem9-algorithms`(facts-extraction, reconciliation)입니다. 같은 내용을 ⑤ Behind the scenes의 **기술 설명** 탭에 한·영으로 보여줍니다.
+
+- **1단계 사실 추출 (요약)**: 기본적으로 `user` 발화만 근거로 씁니다(`system`, `tool`은 제외, `assistant`는 설정 시에만). 사실 하나는 혼자 읽어도 뜻이 통하는 짧은 문장이고, 출처 발화(`source_seqs`)를 metadata에 남깁니다. 검색 의도, 일시적인 상태, 작업 로그 유형은 버립니다.
+- **2단계 조정 (reconcile)**: 새 사실마다 기존 `insight`와 `pinned`를 벡터(유사도 0.3 미만 제외)와 키워드로 찾아 후보 최대 60개와 함께 LLM에 한 번 넘기고, `ADD` / `UPDATE` / `DELETE` / `NOOP`을 받습니다.
+  - `UPDATE`는 덮어쓰지 않습니다. 한 트랜잭션에서 옛 기억을 `archived`로 바꾸고 `superseded_by`로 새 기억에 연결합니다.
+  - `DELETE`는 행을 지우지 않고 상태를 `deleted`로 바꿉니다.
+  - `pinned`는 조정이 지우거나 고치지 않습니다(UPDATE 대상이면 새 insight를 따로 만듦).
+  - LLM 호출이나 JSON 복구가 실패하면 잘못된 쓰기를 막으려고 그 회차의 쓰기를 모두 건너뜁니다.
+- **원문**: 대화 원문은 추출과 별도로 `session`으로 저장될 수 있습니다.
+
+| 손실 가능성 | 이 데모의 대응 |
+|---|---|
+| 요약이라 말투·조건이 줄어듦. 설계 문서는 원문 언어 유지지만, Hosted에서는 한국어 사유가 영어 insight로 저장됨 | 사유 원문을 결정 기록(`pinned`)에 그대로 함께 저장 |
+| 일시적이라 판단하거나 LLM 오류로 추출되지 않음 | 15초 안에 insight가 없으면 Claude로 추출해 `pinned`로 저장 |
+| UPDATE·DELETE로 옛 insight가 active 목록에서 빠짐 | 결정·체결 기록은 `pinned`라 조정 대상이 아님. 근거로 쓴 기억 ID를 `recommendations.memory_refs`에 저장 |
+| 목록 API는 `limit`개까지만 돌려줌 | `total`까지 `offset`으로 페이지를 넘겨 모두 읽음 (`Mem9Client.list_all`) |
+| 기억이 수백 개면 프롬프트가 길어짐 | 데모 규모는 전체를 넣음. 운영 규모에서는 mem9 하이브리드 검색으로 관련 기억만 고르고 `pinned`는 항상 포함 |
 
 ### 1.3 Claude API (LangChain 경유)
 
@@ -287,7 +307,7 @@ flowchart TD
 ```
 
 - `analyze_signal`의 결과는 상태의 `opportunities: Annotated[list, operator.add]` 필드에 누적되어, 모든 분기가 끝난 뒤 `map_entities`가 한 번 실행됩니다.
-- 실행 예: `analysis_graph.invoke({}, {"max_concurrency": 5})`
+- 실행 예: `analysis_graph.invoke({"workspace": ws}, {"max_concurrency": 12})` (8에서 12로 올려 40건 분석이 약 16초에서 12초로 줄었고, 429는 없었습니다)
 - 신뢰도(`confidence`)가 낮거나 매칭되는 프로토콜이 없는 기회는 `map_entities`에서 제외하고 사유를 로그로 남깁니다.
 
 #### 2.4.2 추천·승인 그래프 (`recommend_graph`)
@@ -484,7 +504,7 @@ LIMIT 10;
 
 ### 4.3 기억을 읽는 시점
 
-1. 추천 요청 시 `GET /memories?appId=<작업 공간>_user_<id>&limit=50`으로 **사용자 기억 전체**를 가져옵니다. `session`(대화 원문)은 제외하고 `pinned`와 `insight`만 씁니다. `q` 검색은 단어 일치 방식이라 쓰지 않습니다.
+1. 추천 요청 시 `GET /memories?appId=<작업 공간>_user_<id>&limit=100`으로 **사용자 기억 전체**를 가져옵니다. 응답의 `total`이 더 크면 `offset`으로 다음 페이지를 읽습니다. 같은 시간에 프로필·보유 자산·거래소 SQL을 실행합니다(`recall_memory`). `session`(대화 원문)은 제외하고 `pinned`와 `insight`만 씁니다. `q` 검색은 단어 일치 방식이라 쓰지 않습니다.
 2. 반환된 기억을 두 곳에 사용
    - **검색 의도 문장 생성** → TiDB 벡터 검색 질의 (Claude가 기억과 프로필을 보고 한국어 문장 생성)
    - **LLM 프롬프트**에 주입 → 순위 결정과 근거 작성
@@ -604,7 +624,7 @@ class ExecutionCommand(BaseModel):
 | 2 | 사용자 대시보드 | 보유 자산(위치·국내/해외/온체인 구분)·거래소 계정, mem9 기억 목록, 해외 거래소 월말 잔고 차트(5억 원 기준선) | TiDB 관계형 데이터·월별 집계 + mem9, 해외 계좌 신고 참고 |
 | 3 | 개인화 추천 | 그래프 진행 단계 표시 → 후보 Top-10 → LLM 추천 카드 3개 + 근거(실시간 스트리밍, 데이터 + 참고한 기억) | 두 기술의 결합 |
 | 4 | 승인 & 실행 | 추천에 "실행 요청" → 승인 화면(주문 요약·실행 경로·단계·시뮬레이션, 해외 거래소 주문이면 해외 잔고 정보, 원문 → JSON → 엔진 명령 과정(5.1절)) → 승인/거절(사유) → 엔진 응답·agent 결과 요약 | AI가 만든 JSON 명령을 agent가 엔진 API로 넘기고 사람이 승인, 새로고침 후에도 이어지는 승인 |
-| 5 | Behind the scenes | SQL Inspector, mem9 API 호출 로그, 엔진 API 호출 로그(Engine calls), LangGraph 그래프와 체크포인트 이력, 아키텍처 다이어그램 | 기술적 신뢰 |
+| 5 | Behind the scenes | SQL Inspector, mem9 API 호출(요청과 응답 JSON), 엔진 API 호출 로그(Engine calls), LangGraph(그래프, 지나간 노드 표시, 노드 설명표, 노드별 시간, 체크포인트 이력, 분석 그래프), 기술 설명(mem9 압축·요약과 손실, LangGraph 구성 요소와 실행 흐름), 아키텍처 다이어그램 | 기술적 신뢰 |
 
 사이드바에 **"데모 초기화"** 버튼(확인 단계 포함)을 두어 **자기 작업 공간만** 시연 전 상태로 되돌립니다(6.3절). 누구나 쓸 수 있고 다른 방문자에게는 영향이 없습니다.
 - **중복 실행 방지**: 누르면 초기화가 끝날 때까지(약 15초) 버튼이 비활성화됩니다. 작업 공간마다 잠금을 두어, 같은 계정으로 두 창에서 눌러도 한 번만 실행됩니다.
@@ -618,8 +638,10 @@ class ExecutionCommand(BaseModel):
   - 검색 의도 문장
   - **AI 검토 메모**: thinking 요약(`display: "summarized"`, 영문)이 본문보다 약 7초 먼저 도착합니다.
   - 작성 중인 카드: 부분 JSON을 해석해 표시합니다.
-- **기억 표시 번역**: mem9가 영어·중국어로 추출한 기억은 `core/llm.to_korean()`으로 화면에서만 한국어로 옮깁니다(thinking 끔, 캐시). 원문은 ② 화면의 "mem9 원문 그대로 보기"에 있습니다.
-- **그래프 그림**: ⑤ 화면은 `get_graph().draw_mermaid()` 결과를 Mermaid(CDN, 10.9.1 고정)로 그립니다.
+- **기억 표시 번역**: mem9가 영어·중국어로 추출한 기억은 `core/translations.cached_translate()`로 화면에서만 한국어로 옮깁니다(thinking 끔, TiDB 캐시). 승인·거절 뒤 새로 생긴 기억은 백그라운드에서 두 언어로 미리 번역해 둡니다. 원문은 ② 화면의 "mem9 원문 그대로 보기"에 있습니다.
+- **그래프 그림**: ⑤ 화면은 `get_graph().draw_mermaid()` 결과를 Mermaid(CDN, 10.9.1 고정)로 그립니다. 최근 추천 스레드가 지나간 노드는 `classDef visited`로 칠합니다.
+- **노드별 시간**: `core/graph_runs.stream_timed()`가 `updates`를 받을 때마다 시각을 남겨 노드별 시간을 계산합니다(순차 그래프라 앞 노드가 끝난 때부터 이 노드가 끝난 때까지). 화면(⑤ LangGraph 탭)과 `run_scenario.py --timing`이 같은 기록을 씁니다. 서버 메모리에만 있어 재시작하면 비워집니다.
+- **승인·거절 직후 표시**: tool이 끝나는 즉시 엔진 응답(체결)이나 거절 기록을 보여주고, agent의 결과 요약은 그 아래에 토큰 단위로 스트리밍합니다.
 - **검증**: `streamlit.testing.v1.AppTest`로 하이라이트 장면 전체(분석 → 추천 → LP 실행 요청 → 거절 → 재추천 → 승인)를 화면 조작으로 실행해 통과했습니다. 실제 서버 기동과 health 확인도 마쳤습니다. 브라우저에서 보이는 모양은 아직 사람이 확인하지 않았습니다.
 
 ### 6.1 한·영 전환 (내용 동일)
@@ -910,6 +932,7 @@ tidb-mem9-demo/
 ├── app.py                      # 진입점: st.navigation, 사이드바(사용자 선택·초기화·고지)
 ├── ui/common.py                # 화면 공통: 번역 캐시, 체크포인트 상태 읽기, 추천 카드, 그래프 스트리밍
 ├── ui/i18n.py                  # 한·영 문구 사전 t(), 언어 토글, 금액 표기, SQL 라벨·컬럼 번역표
+├── ui/explain.py               # Behind the scenes 설명 자료: LangGraph 노드 설명표, 기술 설명 탭 글과 그림 (한·영)
 ├── app_pages/                  # st.navigation이 묶는 화면 (Streamlit 권장 구조)
 │   ├── 1_signal_analysis.py     # 첫 화면 /
 │   ├── 2_user_dashboard.py      # /dashboard
@@ -922,6 +945,8 @@ tidb-mem9-demo/
 │   ├── db.py                   # TiDB 연결 (PyMySQL, TLS), 공유 연결 Database, SQL 로그 기록
 │   ├── mem9_client.py          # mem9 REST 클라이언트 (httpx), 호출 로그 기록, 429 재시도
 │   ├── memory_jobs.py          # 승인·거절 뒤 mem9 기억 정리 백그라운드 작업
+│   ├── translations.py         # 표시용 번역과 TiDB 번역 캐시 (화면, 백그라운드 미리 번역)
+│   ├── graph_runs.py           # 그래프 실행의 노드별 시간 기록 (LangGraph 탭, run_scenario --timing)
 │   ├── call_log.py             # Behind the scenes 호출 기록 (작업 공간별, ContextVar)
 │   ├── workspace.py            # 방문자별 작업 공간: 생성(mem9 온보딩 기억), 자기 작업 공간 초기화
 │   ├── llm.py                  # ChatAnthropic 생성, Structured Output, 모델 설정 (필요 시 anthropic SDK 대체)
@@ -937,8 +962,8 @@ tidb-mem9-demo/
 ├── scripts/
 │   ├── smoke_test.py           # 1단계: TiDB·Auto Embedding·mem9·체크포인터·ChatAnthropic 확인
 │   ├── seed.py                 # 시드 적재 + mem9 초기 기억 + 초기화
-│   ├── run_scenario.py         # 하이라이트 장면을 UI 없이 실행, 합격 기준 7개 확인 (--lang ko/en, 리허설용)
-│   └── ui_check.py             # AppTest 화면 점검: 로그인 차단, 6화면×2언어 렌더링, 영어 모드 한글 0개, 관리자 권한
+│   ├── run_scenario.py         # 하이라이트 장면을 UI 없이 실행, 합격 기준 7개 확인 (--lang ko/en, --timing, 리허설용)
+│   └── ui_check.py             # AppTest 화면 점검: 로그인 차단, 6화면×2언어 렌더링(⑤는 탭별), 영어 모드 한글 0개, 관리자 권한, 노드 설명표
 ├── data/
 │   ├── signals.json            # 인플루언서·DeFi 원문 (합성)
 │   ├── users.json              # 사용자 3명, 거래소 계정, 온보딩 선호(mem9 초기 기억)
@@ -992,14 +1017,31 @@ tidb-mem9-demo/
 | 리스크 | 대응 |
 |---|---|
 | mem9 smart ingest 지연·추출 실패 | 비동기 전송 후 최대 15초 대기("기억 정리 중" 표시), 없으면 Claude로 추출해 `pinned`로 기록. 시나리오 2회 중 1회 실제로 대체 경로 동작 |
-| mem9 추출 언어가 매번 다름 (영어 또는 중국어로 저장됨) | mem9 원본은 그대로 두고, 화면에 표시할 때 `to_korean()`으로 번역 (구현 완료). 추천 근거는 Claude가 한국어로 작성 |
+| mem9 추출 언어가 매번 다름 (영어 또는 중국어로 저장됨) | mem9 원본은 그대로 두고, 화면에 표시할 때 번역 (`core/translations.py`, 구현 완료). 추천 근거는 Claude가 한국어로 작성 |
 | LLM 결과가 실행마다 달라짐 | 하이라이트 장면을 프롬프트 규칙으로 고정하고 `scripts/run_scenario.py`로 리허설 때마다 합격 기준 확인 |
-| 추천 대기 시간 (1회 13~18초, 그중 `recommend` 노드 약 10초) | thinking을 끄면 2배 빨라지지만 결과가 흔들려 켜 둠. 화면에서 진행 단계, AI 검토 메모(thinking 요약), 작성 중인 카드를 스트리밍으로 보여줌 (구현 완료, UI 기준 추천 21~22초) |
+| 추천 대기 시간 | 아래 12.1절 참고. thinking을 끄면 2배 빨라지지만 결과가 흔들려 켜 둠. 화면에서 진행 단계, AI 검토 메모(thinking 요약), 작성 중인 카드를 스트리밍으로 보여줌 |
 | mem9 `q` 검색이 의미 검색이 아님 | `q`를 쓰지 않고 사용자 기억 전체를 목록으로 가져와 Claude에 전달 |
 | 임베딩 입력 길이 제한(2,048자) | 원문 대신 LLM이 만든 요약(`summary`)만 임베딩 |
 | 라이브 시연 중 외부 API 장애 | 데모 초기화 버튼, 직전 리허설의 LLM 응답 캐시 모드 |
 | 앱 재시작 시 진행 중인 기억 정리 작업 유실 | 작업은 서버 메모리에만 있음. 결정·체결은 이미 TiDB에 저장되어 있고, 사라지는 것은 그 순간 정리 중이던 mem9 기억뿐. 시연 직전 재시작을 피함 |
 | LLM 응답 품질 부족 | `LLM_MODEL`만 `claude-sonnet-5-5`로 전환 |
+
+### 12.1 응답 시간 점검 (2026-11-05)
+
+`run_scenario.py --timing`으로 노드별 시간을 쟀습니다. 앱(Streamlit Community Cloud)과 TiDB(ap-northeast-1)가 다른 지역에 있는 경우를 흉내 내려고, 로컬에서 DB 명령마다 110ms를 더해 측정했습니다(로컬 왕복 약 40ms).
+
+LLM 생성 시간은 실행마다 2~3초씩 달라지므로, 개선 효과는 **LLM이 아닌 노드의 시간**으로 비교합니다. 개선 후는 2회 측정입니다.
+
+| 구간 | LLM이 아닌 노드 (개선 전) | LLM이 아닌 노드 (개선 후) | 전체 (개선 전 / 개선 후) | 바꾼 것 |
+|---|---|---|---|---|
+| 1회차 추천 | 5.3초 | 1.9초, 1.8초 | 21.8초 / 16.0초, 17.9초 | mem9 조회를 SQL과 동시에, 카드 저장을 여러 행 INSERT 1번으로, 체크포인터 연결 분리 |
+| 거절 처리 | 3.3초 | 1.9초, 1.9초 | 4.4초 / 2.9초, 3.0초 | 체크포인터 연결 분리 (노드 SQL이 체크포인트 쓰기를 기다리지 않음) |
+| 2회차 추천 | 4.2초 | 1.6초, 1.7초 | 20.5초 / 14.4초, 19.1초 | 위와 같음. 새 기억 번역은 기억 정리 뒤 백그라운드로 미리 만들어 화면이 기다리지 않음 |
+| 원문 40건 분석 | | | 약 16초 / 약 12초 | 동시 실행 8 → 12 (각 2회) |
+
+- 남은 시간의 대부분은 `recommend` 노드의 Claude 생성입니다(출력 약 2,300토큰, 그중 thinking 약 1,250토큰, 약 11~12초). 모델, thinking, 프롬프트는 바꾸지 않았습니다.
+- 합격 기준 7개는 개선 후에도 한국어·영어 모두 통과했습니다.
+- 배포 환경의 실제 수치는 ⑤ LangGraph 탭의 노드별 시간으로 확인합니다.
 | LLM 응답 중단(`stop_reason`이 `refusal`/`max_tokens`) | 감지 후 재시도, 실패 시 사용자에게 안내 |
 | LLM이 잘못된 실행 명령 생성 | 그래프의 `validate` 노드에서 보유 수량·체인·슬리피지 재검증, 실패 시 1회 재생성 |
 | 직접 작성한 체크포인터(`TiDBSaver`)의 버그 | 스모크 테스트로 interrupt → 새 연결 재개 → 이력 조회 → 삭제를 매번 확인. LangGraph 업그레이드 시 버전을 고정하고 재확인 |

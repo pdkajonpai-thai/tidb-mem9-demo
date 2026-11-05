@@ -20,11 +20,11 @@ from langgraph.types import RetryPolicy, Send
 
 from core import analyzer, recommender
 from core.checkpoint_tidb import TiDBSaver
-from core.db import get_db
+from core.db import Database
 from core.workspace import thread_prefix
 
 LLM_RETRY = RetryPolicy(max_attempts=3)
-ANALYSIS_CONCURRENCY = 8
+ANALYSIS_CONCURRENCY = 12      # 8 → 12: 원문 40건 분석 16초 → 12초 (2026-11-05 측정, 429 없음)
 
 
 # ---- 분석 그래프 ----
@@ -75,6 +75,7 @@ class RecommendState(TypedDict, total=False):
     holdings: list[dict[str, Any]]
     exchanges: list[dict[str, Any]]
     memories: list[dict[str, Any]]
+    memories_response: dict[str, Any]  # 기억 조회 mem9 응답 원본 (화면 표시용, 앞 20개)
     intent: str
     intent_reason: str
     candidates: list[dict[str, Any]]
@@ -139,6 +140,8 @@ def get_analysis_graph():
 
 @lru_cache
 def get_recommend_graph():
-    saver = TiDBSaver(get_db())
+    # 체크포인터는 연결을 따로 쓴다. LangGraph는 체크포인트를 다음 노드와 동시에(durability="async") 쓰는데,
+    # 노드의 SQL과 한 연결(Lock)을 같이 쓰면 그 SQL이 체크포인트 쓰기가 끝날 때까지 기다린다
+    saver = TiDBSaver(Database())
     saver.setup()
     return build_recommend_graph(saver)

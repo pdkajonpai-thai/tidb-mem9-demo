@@ -49,6 +49,10 @@ with right:
                 st.caption(t(f"mem.{source}", n=len(group)).replace("**", ""))
                 for m in group:
                     st.markdown(f"- {lines[id(m)]}")
+        # 이 추천이 실제로 받은 mem9 목록 응답 (GET /v1alpha2/mem9s/memories, 첫 페이지)
+        if (raw := state.get("memories_response")) and st.toggle(t("p3.raw_response"), key="raw_mem9"):
+            st.caption(t("p3.raw_caption", total=raw.get("total", "-"), n=len(raw.get("memories", []))))
+            st.json(raw, expanded=3)
     candidates = state.get("candidates", [])
     with st.expander(t("p3.candidates", n=len(candidates))):
         titles = localized([c["title"] for c in candidates])

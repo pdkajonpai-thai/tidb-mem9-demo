@@ -7,6 +7,7 @@
 - messages + mode=smart는 비동기(202)로 처리되고, 보통 10–25초 안에 insight가 추출된다.
   추출되지 않는 경우도 있어 호출부에서 대체 경로를 둔다.
 - 추출된 insight는 입력이 한국어여도 영어로 저장된다.
+- 목록 응답은 {"memories": [...], "total", "limit", "offset"}이다. total이 한 페이지보다 많으면 offset으로 넘긴다.
 """
 from __future__ import annotations
 
@@ -21,6 +22,15 @@ from core.config import get_settings
 
 MEMORIES = "/v1alpha2/mem9s/memories"
 RATE_LIMIT_RETRIES = 3     # 429 Too Many Requests 재시도 횟수
+PAGE_SIZE = 100
+SHOWN_ITEMS = 20           # 화면 기록용으로 응답의 memories를 앞에서 몇 개까지 남길지
+
+
+def trimmed(response: Any, n: int = SHOWN_ITEMS) -> Any:
+    """화면에 보일 응답 사본: memories가 길면 앞의 n개만 남기고 잘린 개수를 적는다."""
+    if not isinstance(response, dict) or len(response.get("memories") or []) <= n:
+        return response
+    return {**response, "memories": response["memories"][:n], "_truncated": len(response["memories"]) - n}
 
 
 def user_app_id(user_id: int, workspace: str) -> str:
@@ -46,6 +56,10 @@ class Mem9Client:
         for attempt in range(RATE_LIMIT_RETRIES + 1):
             start = time.perf_counter()
             res = self._http.request(method, path, **kwargs)
+            try:
+                response = res.json() if res.content else None
+            except ValueError:
+                response = res.text[:2000]
             self.calls.append({
                 "method": method,
                 "path": path,
@@ -53,6 +67,7 @@ class Mem9Client:
                 "body": kwargs.get("json"),
                 "status": res.status_code,
                 "ms": round((time.perf_counter() - start) * 1000),
+                "response": trimmed(response),
             })
             # 요청 한도(429)에 걸리면 Retry-After(없으면 1·2·4초)만큼 쉬고 다시 보낸다
             if res.status_code != 429 or attempt == RATE_LIMIT_RETRIES:
@@ -73,12 +88,40 @@ class Mem9Client:
         tags: list[str] | None = None,
         limit: int = 50,
     ) -> list[dict]:
+        return self.list_page(app_id, memory_type=memory_type, tags=tags, limit=limit).get("memories", [])
+
+    def list_page(
+        self,
+        app_id: str,
+        *,
+        memory_type: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """목록 응답 그대로 ({"memories", "total", "limit", "offset"})."""
         params: dict[str, Any] = {"appId": app_id, "limit": limit}
+        if offset:
+            params["offset"] = offset
         if memory_type:
             params["memory_type"] = memory_type
         if tags:
             params["tags"] = ",".join(tags)
-        return self._request("GET", MEMORIES, params=params).get("memories", [])
+        return self._request("GET", MEMORIES, params=params) or {}
+
+    def list_all(self, app_id: str) -> tuple[list[dict], dict]:
+        """기억을 페이지를 넘겨 모두 가져온다. (전체 목록, 첫 페이지 응답)을 돌려준다.
+
+        한 번에 가져오는 개수를 넘는 기억이 빠지지 않게 한다 (추천이 오래된 기억을 놓치지 않도록).
+        """
+        first = self.list_page(app_id, limit=PAGE_SIZE)
+        memories = list(first.get("memories", []))
+        while len(memories) < first.get("total", 0):
+            page = self.list_page(app_id, limit=PAGE_SIZE, offset=len(memories)).get("memories", [])
+            if not page:
+                break
+            memories += page
+        return memories, first
 
     def add_pinned(
         self, app_id: str, content: str, *, tags: list[str] | None = None, metadata: dict | None = None
@@ -121,7 +164,7 @@ class Mem9Client:
 
     def clear(self, app_id: str) -> int:
         """appId의 기억을 모두 지운다 (데모 초기화용)."""
-        memories = self.list_memories(app_id, limit=200)
+        memories, _ = self.list_all(app_id)
         for m in memories:
             self.delete(m["id"])
         return len(memories)

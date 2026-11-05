@@ -5,17 +5,15 @@
 """
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 import streamlit as st
 from langchain_core.utils.json import parse_partial_json
 from langgraph.types import Command
 
-from core import engine_mock, memory_jobs, workflow
+from core import engine_mock, graph_runs, memory_jobs, translations, workflow
 from core.audit import identity, log_event
 from core.db import get_db
-from core.llm import needs_translation, translate
 from core.recommender import MAX_SLIPPAGE_BPS, plain
 from core.schemas import ExecutionCommand, Opportunity
 from core.workspace import workspace_id
@@ -56,33 +54,10 @@ def current_user() -> dict:
 
 # ---- 표시용 번역 ----
 
-def _src_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 @st.cache_data(show_spinner=False, max_entries=2000)
 def _translate(texts: tuple[str, ...], target: str) -> list[str]:
-    """TiDB 번역 캐시(translations)에서 먼저 찾고, 없는 문장만 Claude로 번역해 저장한다."""
-    need = list(dict.fromkeys(x for x in texts if needs_translation(x, target)))
-    if not need:
-        return list(texts)
-    db = get_db()
-    hashes = {x: _src_hash(x) for x in need}
-    rows = db.query(
-        f"SELECT src_hash, text FROM translations WHERE lang = %s AND src_hash IN ({', '.join(['%s'] * len(need))})",
-        (target, *hashes.values()), label="번역: 캐시 조회")
-    cached = {r["src_hash"]: r["text"] for r in rows}
-    mapping = {x: cached[h] for x, h in hashes.items() if h in cached}
-    missing = [x for x in need if x not in mapping]
-    if missing:
-        done = translate(missing, target)
-        new = [(hashes[x], target, x, y) for x, y in zip(missing, done) if y != x]
-        if new:
-            db.executemany(
-                "INSERT INTO translations (src_hash, lang, src, text) VALUES (%s, %s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE text = VALUES(text)", new, label="번역: 캐시 저장")
-        mapping.update(zip(missing, done))
-    return [mapping.get(x, x) for x in texts]
+    """TiDB 번역 캐시(core/translations.py) 위에 세션 간 메모리 캐시를 한 겹 더 둔다."""
+    return translations.cached_translate(list(texts), target)
 
 
 def localized(texts: list[str]) -> list[str]:
@@ -203,14 +178,25 @@ def _blocks(chunk) -> list[dict]:
     return content if isinstance(content, list) else [{"type": "text", "text": content}]
 
 
-def stream_graph(graph_input, thread_id: str, status, *, show_cards: bool = False) -> None:
-    """추천 그래프를 실행하며 진행 단계, AI 검토 메모, 만들어지는 카드를 status 안에 보여준다."""
+def _tool_updates(update) -> list[dict]:
+    """ToolNode의 updates 값(dict 또는 Command 결과 목록)을 dict 목록으로."""
+    items = update if isinstance(update, list) else [update]
+    return [u if isinstance(u, dict) else getattr(u, "update", None) or {} for u in items]
+
+
+def stream_graph(graph_input, thread_id: str, status, *, phase: str, show_cards: bool = False) -> None:
+    """추천 그래프를 실행하며 진행 단계, AI 검토 메모, 만들어지는 카드를 status 안에 보여준다.
+
+    승인·거절 뒤에는 엔진 결과를 tool이 끝나는 즉시 보여주고, agent의 결과 요약은 그 아래에 스트리밍한다.
+    노드별 걸린 시간은 graph_runs에 남아 Behind the scenes의 LangGraph 탭에 보인다.
+    """
     graph = workflow.get_recommend_graph()
     memo_box = status.empty()
     cards_box = status.empty()
-    memo, body = "", ""
-    for mode, payload in graph.stream(graph_input, workflow.thread_config(thread_id),
-                                      stream_mode=["updates", "messages"]):
+    agent_box = None
+    memo, body, summary = "", "", ""
+    for mode, payload in graph_runs.stream_timed(graph, graph_input, workflow.thread_config(thread_id),
+                                                 phase=phase, stream_mode=("updates", "messages")):
         if mode == "updates":
             for node, update in payload.items():
                 if node not in STEP_NODES:
@@ -224,8 +210,22 @@ def stream_graph(graph_input, thread_id: str, status, *, show_cards: bool = Fals
                     for call in getattr(update["messages"][-1], "tool_calls", None) or []:
                         status.code(f"{call['name']}(note={call['args'].get('note')!r}, "
                                     f"steps={len(call['args'].get('steps', []))})", language="python")
+                if node == "tools" and update:
+                    for u in _tool_updates(update):
+                        if order := u.get("order"):
+                            status.success(t("p4.filled", id=order["order_id"], status=order["status"],
+                                             tx=order["tx_hash"][:18]))
+                        elif u.get("outcome") == "rejected":
+                            status.info(t("stream.rejected"))
+                        if u.get("outcome"):
+                            agent_box = status.empty()
             continue
         chunk, meta = payload
+        if meta.get("langgraph_node") == "exec_agent" and agent_box is not None:
+            summary += "".join(b.get("text", "") for b in _blocks(chunk) if b.get("type") == "text")
+            if summary:
+                agent_box.markdown(f"{t('p4.agent')}  \n{summary}")
+            continue
         if meta.get("langgraph_node") != "recommend":
             continue
         for b in _blocks(chunk):
@@ -248,7 +248,7 @@ def start_recommendation(user_id: int) -> str:
     log_event("llm:recommend", {"persona": user_id, "thread_id": thread_id, "lang": lang()})
     with st.status(t("status.building"), expanded=True) as status:
         stream_graph({"workspace": workspace, "user_id": user_id, "thread_id": thread_id, "lang": lang()},
-                     thread_id, status, show_cards=True)
+                     thread_id, status, phase="recommend", show_cards=True)
         status.update(label=t("status.built"), state="complete", expanded=False)
     return thread_id
 
@@ -256,7 +256,8 @@ def start_recommendation(user_id: int) -> str:
 def request_execution(thread_id: str, recommendation_id: int) -> None:
     log_event("llm:execute_request", {"thread_id": thread_id, "recommendation_id": str(recommendation_id)})
     with st.status(t("status.calling_tool"), expanded=True) as status:
-        stream_graph(Command(resume={"recommendation_id": recommendation_id}, update={"lang": lang()}), thread_id, status)
+        stream_graph(Command(resume={"recommendation_id": recommendation_id}, update={"lang": lang()}), thread_id, status,
+                     phase="execute")
         status.update(label=t("status.waiting_approval"), state="complete", expanded=False)
 
 
@@ -265,7 +266,7 @@ def decide_order(thread_id: str, decision: dict) -> None:
                                "reason": decision.get("reason", "")})
     label = t("status.executing") if decision["action"] == "approve" else t("status.recording")
     with st.status(label, expanded=True) as status:
-        stream_graph(Command(resume=decision, update={"lang": lang()}), thread_id, status)
+        stream_graph(Command(resume=decision, update={"lang": lang()}), thread_id, status, phase="decide")
         status.update(label=t("status.done"), state="complete", expanded=False)
 
 

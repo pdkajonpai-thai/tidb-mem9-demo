@@ -8,6 +8,7 @@
   3) 영어 모드에서 화면 문구에 한글이 없다 (mem9 원문 보기·코드 블록·표 내용은 제외)
   4) 누구나 자기 작업 공간의 '데모 초기화'를 쓸 수 있고, '접속 기록'(전체 초기화 포함)은 관리자에게만 보인다
   5) 화면 사용 뒤 access_logs에 visit/login 이외의 사용 기록이 쌓인다 (LLM 동작은 run_scenario에서 확인)
+  6) Behind the scenes의 탭을 하나씩 열어도 예외가 없고(영어 모드는 한글 없음), LangGraph 노드 설명표가 그래프 노드와 일치한다
 """
 from __future__ import annotations
 
@@ -59,14 +60,29 @@ def main() -> int:
             at.session_state["user_id"] = uid
             for page in PAGES:
                 at.switch_page(page).run()
-                if at.exception:
-                    failures.append(f"{lang} user{uid} {page}: {at.exception[0].value}")
-                    continue
-                if lang == "en":
-                    leftovers = [x for x in visible_texts(at) if HANGUL.search(x)]
-                    if leftovers:
-                        failures.append(f"en user{uid} {page}: 한글 남음 {leftovers[:3]}")
+                # Behind the scenes는 선택한 탭만 그리므로 탭을 하나씩 열어 본다 (사용자 1에서만)
+                tabs = [x.label for x in at.tabs] if page == PAGES[4] and uid == 1 else [None]
+                for tab in tabs:
+                    if tab is not None:
+                        at.session_state["behind_tab"] = tab
+                        at.run()
+                    where = f"{lang} user{uid} {page}" + (f" [{tab}]" if tab else "")
+                    if at.exception:
+                        failures.append(f"{where}: {at.exception[0].value}")
+                        continue
+                    if lang == "en":
+                        leftovers = [x for x in visible_texts(at) if HANGUL.search(x)]
+                        if leftovers:
+                            failures.append(f"{where}: 한글 남음 {leftovers[:3]}")
         print(f"[2·3] 언어 {lang}: 사용자 3명 × 화면 {len(PAGES)}개 렌더링 완료")
+
+    from core import workflow
+    from ui.explain import GRAPH_NODES
+    graph_nodes = set(workflow.get_recommend_graph().get_graph().nodes) - {"__start__", "__end__"}
+    nodes_match = graph_nodes == set(GRAPH_NODES)
+    print(f"[6] LangGraph 노드 설명표 = 그래프 노드: {'✓' if nodes_match else '✗'}")
+    if not nodes_match:
+        failures.append(f"node table mismatch: {sorted(graph_nodes ^ set(GRAPH_NODES))}")
 
     reset_labels = {"초기화 실행", "Run reset"}
     reset_all_labels = {"전체 초기화 실행", "Reset everything"}

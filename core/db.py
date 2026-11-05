@@ -134,5 +134,5 @@ class Database:
 
 @lru_cache
 def get_db() -> Database:
-    """프로세스 전체에서 공유하는 Database (Streamlit 세션·체크포인터가 함께 사용)."""
+    """프로세스 전체에서 공유하는 Database (화면, 그래프 노드, 기록). 체크포인터는 연결을 따로 쓴다."""
     return Database()

@@ -52,7 +52,7 @@ st.html("""<style>
 </style>""")
 with right, st.container(border=True, key="agent_memory"):
     app_id = user_app_id(uid, current_workspace())
-    memories = get_mem9().list_memories(app_id)
+    memories, _ = get_mem9().list_all(app_id)       # 추천과 같이 전체를 읽는다 (한 페이지에서 잘리지 않게)
     shown = [m for m in memories if m["memory_type"] != "session"]
     st.markdown(t("p2.memories", n=len(shown), app=app_id))
     lines = dict(zip((id(m) for m in shown), memory_lines(shown)))     # 번역은 한 번에
