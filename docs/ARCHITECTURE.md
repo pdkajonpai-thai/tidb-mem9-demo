@@ -823,7 +823,7 @@ TableReader
    - **Generate Password**로 비밀번호 생성 후 따로 저장 (다시 볼 수 없음)
    - Host, Port(4000), User(`xxxxx.root` 형태)를 메모
 4. 좌측 **SQL Editor**에서 `CREATE DATABASE invest_demo;` 실행
-5. 이후 `sql/schema.sql`을 SQL Editor에 붙여넣어 실행합니다 (구현 단계에서 제공).
+5. 테이블은 `python scripts/seed.py`가 `sql/schema.sql`로 만듭니다(8.4). 배포 순서 전체는 [README](../README.md)에 있습니다.
 
 ### 8.2 mem9 API 키 발급
 
