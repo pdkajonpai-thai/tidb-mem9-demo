@@ -1,7 +1,7 @@
-"""분석 그래프(analysis_graph) 노드 함수.
+"""Node functions of the analysis graph (analysis_graph).
 
-load_signals → analyze_signal(시그널마다 Send) → map_entities → save_opportunities
-ARCHITECTURE.md 2.4.1절 참고.
+load_signals → analyze_signal (one Send per signal) → map_entities → save_opportunities
+See ARCHITECTURE.md section 2.4.1.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ SYSTEM = """당신은 DeFi 투자 정보 분석가입니다. 인플루언서 게
 
 
 class SignalTask(TypedDict):
-    """Send로 원문마다 analyze_signal에 넘기는 입력."""
+    """Input passed to analyze_signal for each source post via Send."""
     signal: dict[str, Any]
     catalog: dict[str, Any]
 
@@ -51,7 +51,7 @@ def catalog_prompt(catalog: dict[str, Any]) -> str:
     return f"지원 프로토콜 (이름 / 체인)\n{protocols}\n\n지원 자산: {assets}"
 
 
-# ---- 노드 ----
+# ---- Nodes ----
 
 def load_signals(state: dict) -> dict:
     db = get_db()
@@ -78,7 +78,7 @@ def analyze_signal(task: SignalTask) -> dict:
 
 
 def map_entities(state: dict) -> dict:
-    """LLM이 쓴 이름을 DB ID로 바꾸고, 범위를 보정하고, 같은 기회는 하나로 합친다."""
+    """Maps names written by the LLM to DB IDs, clamps ranges, and merges identical opportunities into one."""
     catalog = state["catalog"]
     protocol_ids = {(p["name"].lower(), p["chain"].lower()): p["id"] for p in catalog["protocols"]}
     assets = {(a["symbol"].upper(), a["chain"].lower()) for a in catalog["assets"]}

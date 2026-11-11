@@ -1,4 +1,5 @@
-"""③ 개인화 추천: 기억 → 검색 의도 → 하이브리드 SQL → 추천 카드 (스트리밍). 카드에서 실행 요청."""
+"""③ Personalized recommendations: memory → search intent → hybrid SQL → cards (streaming).
+Request execution from a card."""
 import streamlit as st
 
 from core.db import get_db
@@ -49,7 +50,7 @@ with right:
                 st.caption(t(f"mem.{source}", n=len(group)).replace("**", ""))
                 for m in group:
                     st.markdown(f"- {lines[id(m)]}")
-        # 이 추천이 실제로 받은 mem9 목록 응답 (GET /v1alpha2/mem9s/memories, 첫 페이지)
+        # the mem9 list response this recommendation actually received (GET /v1alpha2/mem9s/memories, first page)
         if (raw := state.get("memories_response")) and st.toggle(t("p3.raw_response"), key="raw_mem9"):
             st.caption(t("p3.raw_caption", total=raw.get("total", "-"), n=len(raw.get("memories", []))))
             st.json(raw, expanded=3)

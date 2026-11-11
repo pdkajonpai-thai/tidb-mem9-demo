@@ -1,11 +1,11 @@
-"""로그인 신원, 접속 IP, 접속·사용 기록 (access_logs).
+"""Login identity, client IP, and access/usage records (access_logs).
 
-- 신원: st.login(Google OIDC)으로 로그인한 st.user. 로컬 테스트에서만 DEMO_AUTH=off로 우회하고
-  DEMO_DEV_EMAIL을 신원으로 쓴다 (배포 Secrets에는 넣지 않는다).
-- IP는 기록하지 않는다. Streamlit Community Cloud는 실제 접속자 IP를 앱에 전달하지 않는다
-  (2026-10-29 확인: X-Forwarded-For에 내부망 10.x 주소만 옴). access_logs의 ip·forwarded_for 컬럼은
-  IP를 전달하는 호스팅으로 옮길 때를 위해 남겨 두고 비워 둔다.
-- 기록은 데모 초기화로 지우지 않는다.
+- Identity: the st.user logged in via st.login (Google OIDC). Only in local testing is this bypassed with
+  DEMO_AUTH=off, using DEMO_DEV_EMAIL as the identity (not put in the deployed Secrets).
+- IPs are not recorded. Streamlit Community Cloud does not pass the real client IP to the app
+  (checked 2026-10-29: X-Forwarded-For only carries internal 10.x addresses). The ip and forwarded_for
+  columns of access_logs are kept, left empty, for a future move to hosting that passes the IP.
+- Records are not deleted by the demo reset.
 """
 from __future__ import annotations
 
@@ -63,12 +63,12 @@ def session_id() -> str:
 
 
 def _fit(value: Any, size: int) -> str | None:
-    """컬럼 길이에 맞춘 문자열 (예상 밖의 값이 와도 기록이 빠지지 않게)."""
+    """String trimmed to the column length (so a record is not lost when an unexpected value arrives)."""
     return None if value is None else str(value)[:size]
 
 
 def log_event(event: str, detail: dict[str, Any] | None = None) -> None:
-    """access_logs에 한 줄 남긴다. 실패해도 데모는 계속되고 경고 로그만 남긴다."""
+    """Writes one row to access_logs. On failure the demo keeps going and only a warning is logged."""
     who = identity()
     try:
         agent = st.context.headers.get("User-Agent")
@@ -82,12 +82,12 @@ def log_event(event: str, detail: dict[str, Any] | None = None) -> None:
              _fit(agent, 512), session_id(), json.dumps(detail or {}, ensure_ascii=False, default=str)),
             label="기록: 이벤트 저장")
     except Exception:
-        # 기록 실패가 데모를 막지 않게 하되, 빠진 기록을 알 수 있도록 로그를 남긴다
+        # Don't let a failed record block the demo, but log it so missing records can be noticed
         logger.warning("access_logs 기록 실패 (event=%s)", event, exc_info=True)
 
 
 def log_once(event: str, detail: dict[str, Any] | None = None) -> None:
-    """세션당 한 번만 기록한다 (visit, login)."""
+    """Records only once per session (visit, login)."""
     key = f"_audit_logged_{event}"
     if not st.session_state.get(key):
         st.session_state[key] = True

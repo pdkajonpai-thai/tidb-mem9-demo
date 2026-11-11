@@ -1,4 +1,4 @@
-"""④ 승인 & 실행: 실행 agent가 호출한 execute_order tool의 승인 대기 → 승인/거절 → 엔진 실행 결과."""
+"""④ Approval & execution: execution agent's execute_order tool awaits approval → approve/reject → engine result."""
 import streamlit as st
 
 from core.db import get_db
@@ -42,7 +42,7 @@ for thread_id, snap, approval in orders:
                      for i, s in enumerate(cmd["steps"])]),
             hide_index=True, alt=t("p4.steps_alt"))
         st.caption(t("p4.command_caption", id=cmd["command_id"], slip=cmd["max_slippage_bps"], exp=cmd["expires_at"]))
-        command_flow_panel(snap.values, approval)      # 원문 → JSON → 엔진 명령 (기본 접힘)
+        command_flow_panel(snap.values, approval)      # source text → JSON → engine command (collapsed by default)
 
         approve_col, reject_col = st.columns(2)
         with approve_col:
@@ -60,7 +60,7 @@ for thread_id, snap, approval in orders:
                     st.session_state["last_decision"] = thread_id
                     st.rerun()
 
-# ---- 방금 처리한 결과 ----
+# ---- Result just processed ----
 if thread_id := st.session_state.get("last_decision"):
     state = thread_snapshot(thread_id).values
     if state.get("outcome"):
@@ -77,9 +77,9 @@ if thread_id := st.session_state.get("last_decision"):
                     "".join(b.get("text", "") for b in last.content if isinstance(b, dict))
                 st.markdown(t("p4.agent"))
                 st.write(localized([content])[0])
-            memory_job_panel(state.get("memory_job"))      # mem9 기억 정리 (기본 접힘, 백그라운드)
+            memory_job_panel(state.get("memory_job"))      # mem9 memory update (collapsed by default, background)
 
-# ---- 최근 결정 이력 ----
+# ---- Recent decision history ----
 history = get_db().query(
     """
     SELECT r.created_at, o.title, r.status, r.decided_at, e.status AS order_status, e.tx_hash

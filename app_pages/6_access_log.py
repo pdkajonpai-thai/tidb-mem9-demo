@@ -1,4 +1,4 @@
-"""⑥ 접속 기록 (관리자 전용): 로그인·LLM 사용 기록을 TiDB access_logs에서 집계."""
+"""⑥ Access log (admin only): aggregates login and LLM usage records from TiDB access_logs."""
 import csv
 import io
 
@@ -8,7 +8,7 @@ from core import audit
 from core.db import get_db
 from ui.i18n import columns, t
 
-if not audit.is_admin():          # 메뉴에서 숨기지만, 주소로 직접 들어와도 막는다
+if not audit.is_admin():          # hidden from the menu, but also blocked when opened directly by URL
     st.error(t("p6.not_admin"))
     st.stop()
 
@@ -64,7 +64,7 @@ st.markdown(t("p6.per_user"))
 st.dataframe(columns(per_user), hide_index=True, alt=t("p6.per_user_alt"))
 st.caption(t("p6.caption"))
 
-# ---- 전체 초기화 (모든 작업 공간) ----
+# ---- Reset everything (all workspaces) ----
 st.divider()
 st.markdown(t("p6.reset_all_title"))
 workspaces = db.query("SELECT COUNT(*) AS n FROM workspaces", label="기록: 작업 공간 수")[0]["n"]

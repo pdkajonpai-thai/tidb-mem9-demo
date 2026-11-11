@@ -1,4 +1,4 @@
-"""진입점: 로그인 게이트, 언어 토글, 화면 이동(st.navigation), 사이드바(데모 사용자·초기화·고지)."""
+"""Entry point: login gate, language toggle, navigation (st.navigation), sidebar (demo user, reset, notice)."""
 import threading
 
 import streamlit as st
@@ -13,7 +13,7 @@ if absent := missing():
     st.error(t("err.env_missing", keys=", ".join(absent)))
     st.stop()
 
-from core import audit, call_log  # noqa: E402  (환경변수 확인 뒤 DB 연결)
+from core import audit, call_log  # noqa: E402  (connect to the DB after checking env vars)
 from core.workspace import ensure_workspace, reset_workspace  # noqa: E402
 from ui.common import current_user_id, current_workspace, persona_name, users  # noqa: E402
 
@@ -24,15 +24,15 @@ def _reset_locks() -> tuple[threading.Lock, dict[str, threading.Lock]]:
 
 
 def reset_lock(workspace: str) -> threading.Lock:
-    """작업 공간마다 초기화가 한 번에 하나만 돌게 한다 (같은 계정으로 두 창에서 눌러도 한 번만)."""
+    """Allow only one reset at a time per workspace (runs once even if the same account clicks in two windows)."""
     guard, locks = _reset_locks()
     with guard:
         return locks.setdefault(workspace, threading.Lock())
 
 
-# ---- 로그인 게이트 ----
+# ---- Login gate ----
 if not audit.auth_bypassed() and not audit.auth_configured():
-    st.error(t("err.auth_missing"))     # 설정 실수로 보호 없이 열리지 않게 한다
+    st.error(t("err.auth_missing"))     # don't let a config mistake open the app unprotected
     st.stop()
 
 if not audit.is_logged_in():
@@ -48,8 +48,8 @@ if not audit.is_logged_in():
 audit.log_once("login")
 is_admin = audit.is_admin()
 workspace = current_workspace()
-call_log.current_workspace.set(workspace)   # 이 실행의 SQL·mem9 호출을 내 작업 공간 기록에 남긴다
-with st.spinner(t("ws.preparing")):     # 처음 쓰는 작업 공간만 mem9 기억을 준비한다 (몇 초)
+call_log.current_workspace.set(workspace)   # log this run's SQL and mem9 calls to my workspace's records
+with st.spinner(t("ws.preparing")):     # prepare mem9 memories only for a first-time workspace (a few seconds)
     ensure_workspace(workspace)
 
 PAGES = [
@@ -72,24 +72,25 @@ with st.sidebar:
     lang_toggle()
     people = users()
     ids = [u["id"] for u in people]
-    names = {u["id"]: persona_name(u) for u in people}     # 표시 이름은 이번 실행의 언어로 미리 만든다
+    names = {u["id"]: persona_name(u) for u in people}     # build display names in this run's language up front
     st.session_state["user_id"] = st.selectbox(
         t("side.persona"), ids, index=ids.index(current_user_id()) if current_user_id() in ids else 0,
         format_func=names.get)
 
-    # 초기화가 끝난 다음 실행: 팝오버를 닫고 완료 알림을 띄운다 (위젯 상태는 위젯을 그리기 전에만 바꿀 수 있다)
+    # Run after a reset finishes: close the popover and show a done toast
+    # (widget state can only change before the widget is drawn)
     if st.session_state.pop("_reset_done", False):
         st.session_state["reset_popover"] = False
         st.toast(t("side.reset_done"), icon=":material/check_circle:")
     with st.popover(t("side.reset"), icon=":material/restart_alt:", key="reset_popover", on_change="rerun"):
         st.write(t("side.reset_body"))
-        # 누른 뒤 다시 그릴 때 버튼을 비활성화하고 그 실행에서 초기화한다 (중복 클릭 방지)
+        # On the rerun after a click, disable the button and reset in that run (prevents double clicks)
         resetting = st.session_state.get("_resetting", False)
         st.button(t("side.reset_run"), type="primary", disabled=resetting,
                   on_click=lambda: st.session_state.update(_resetting=True))
         if resetting:
             lock = reset_lock(workspace)
-            if not lock.acquire(blocking=False):   # 같은 계정의 다른 창에서 이미 초기화 중
+            if not lock.acquire(blocking=False):   # already resetting in another window of the same account
                 st.session_state.pop("_resetting", None)
                 st.warning(t("side.reset_busy"))
             else:

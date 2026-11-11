@@ -1,18 +1,19 @@
-"""한·영 문구 사전과 언어 도구.
+"""Korean/English string dictionary and language helpers.
 
-- 고정 문구: t("key", **fmt). 두 언어의 내용은 같다.
-- 언어 값은 session_state["_lang"]에 두고, 사이드바·로그인 화면의 토글이 바꾸며 URL(?lang=English)에도 맞춘다.
-- 저장된 내용·다른 언어로 만든 AI 결과는 ui.common.localized()가 화면에서 번역한다.
+- Fixed strings: t("key", **fmt). Both languages carry the same content.
+- The language is kept in session_state["_lang"], changed by the toggle on the sidebar and login page, and synced to
+  the URL (?lang=English).
+- Stored content and AI results made in another language are translated on screen by ui.common.localized().
 """
 from __future__ import annotations
 
 import streamlit as st
 
 LANGS = ("ko", "en")
-# 토글 선택지 = URL 값. 공유 링크는 ?lang=English
+# toggle options = URL values. Share links use ?lang=English
 OPTIONS = {"한국어": "ko", "English": "en"}
 OPTION_OF = {v: k for k, v in OPTIONS.items()}
-LANG_KEY = "_lang"          # 선택한 언어 (위젯이 아닌 값이라 페이지를 옮겨도 지워지지 않는다)
+LANG_KEY = "_lang"          # selected language (not a widget value, so it survives page switches)
 
 
 def default_lang() -> str:
@@ -23,7 +24,7 @@ def default_lang() -> str:
 
 
 def lang() -> str:
-    # 토글이 그려지기 전(메뉴·사이드바 제목)에도 공유 링크의 ?lang= 값을 따르도록 URL을 함께 본다
+    # also check the URL so a share link's ?lang= applies even before the toggle is drawn (menu, sidebar title)
     try:
         value = st.session_state.get(LANG_KEY) or st.query_params.get("lang")
     except Exception:
@@ -36,9 +37,9 @@ def _keep_choice() -> None:
 
 
 def lang_toggle() -> None:
-    # bind="query-params"를 쓰면 URL의 lang을 지울 수 없어 st.switch_page가 실패하고,
-    # 위젯 key에 둔 값은 st.switch_page로 페이지를 옮길 때 지워진다.
-    # 그래서 언어는 위젯 밖(LANG_KEY)에 두고, 위젯은 매번 그 값으로 그린 뒤 URL에도 맞춘다.
+    # With bind="query-params", lang can't be removed from the URL, so st.switch_page fails,
+    # and a value kept in a widget key is cleared when st.switch_page changes pages.
+    # So the language lives outside the widget (LANG_KEY); the widget is drawn from it and the URL synced each time.
     if st.session_state.get(LANG_KEY) not in OPTIONS:
         st.session_state[LANG_KEY] = OPTION_OF[lang()]
     st.session_state["lang_choice"] = st.session_state[LANG_KEY]
@@ -56,25 +57,25 @@ def t(key: str, **fmt) -> str:
 
 
 def krw(value: int) -> str:
-    """원화 금액: 한국어 '4.60억 원', 영어 'KRW 460M'."""
+    """KRW amount: Korean '4.60억 원', English 'KRW 460M'."""
     if lang() == "ko":
         return f"{value / 100_000_000:.2f}억 원"
     return f"KRW {value / 1_000_000:,.0f}M"
 
 
 def label(text: str) -> str:
-    """SQL 로그 라벨 표시용."""
+    """For displaying SQL log labels."""
     return text if lang() == "ko" else LABELS_EN.get(text, text)
 
 
 def columns(rows: list[dict]) -> list[dict]:
-    """영문 키로 만든 행을 현재 언어의 컬럼 이름으로 바꾼다."""
+    """Renames rows built with English keys to column names in the current language."""
     return [{t(f"col.{k}"): v for k, v in row.items()} for row in rows]
 
 
-# (한국어, English)
+# (Korean, English)
 T: dict[str, tuple[str, str]] = {
-    # 공통
+    # Common
     "app.title": ("TiDB + mem9 AI 투자 추천 데모", "TiDB + mem9 AI investment recommendation demo"),
     "app.sidebar_title": ("TiDB + mem9 데모", "TiDB + mem9 demo"),
     "disclaimer": ("정보 제공용 데모입니다. 투자 자문이나 세무 자문이 아니며, 실행은 시뮬레이션입니다. "
@@ -94,7 +95,7 @@ T: dict[str, tuple[str, str]] = {
     "nav.behind": ("Behind the scenes", "Behind the scenes"),
     "nav.audit": ("접속 기록", "Access log"),
 
-    # 로그인
+    # Login
     "login.intro": ("AI가 투자 정보를 분석하고, 사용자의 자산·기억에 맞춰 추천하고, 사람이 승인하면 실행 엔진으로 "
                     "넘기는 과정을 TiDB와 mem9로 보여주는 데모입니다. LLM 비용이 드는 데모라 로그인이 필요합니다.",
                     "This demo uses TiDB and mem9 to show AI analyzing investment information, recommending "
@@ -107,7 +108,7 @@ T: dict[str, tuple[str, str]] = {
                      "The records are used only to run the demo and manage LLM cost."),
     "login.dev_mode": ("로컬 테스트 모드 (DEMO_AUTH=off) · {email}", "Local test mode (DEMO_AUTH=off) · {email}"),
 
-    # 사이드바
+    # Sidebar
     "side.persona": ("데모 사용자", "Demo persona"),
     "side.signed_in": ("로그인: {email}", "Signed in: {email}"),
     "side.logout": ("로그아웃", "Sign out"),
@@ -137,7 +138,7 @@ T: dict[str, tuple[str, str]] = {
     "ws.preparing": ("내 작업 공간을 준비하는 중… (처음 한 번, 약 10초)",
                      "Preparing your workspace… (first time only, about 10 seconds)"),
 
-    # 용어
+    # Terms
     "risk.conservative": ("보수형", "Conservative"),
     "risk.balanced": ("균형형", "Balanced"),
     "risk.aggressive": ("공격형", "Aggressive"),
@@ -152,7 +153,7 @@ T: dict[str, tuple[str, str]] = {
     "status.FAILED": ("실패", "Failed"),
     "route.exchange_api": ("거래소 API", "Exchange API"),
     "route.onchain": ("온체인", "On-chain"),
-    # 이전 버전이 체크포인트에 남긴 경로 값 (승인 대기 중이던 주문 표시용)
+    # route values left in checkpoints by an earlier version (for showing orders that were pending approval)
     "route.거래소 API": ("거래소 API", "Exchange API"),
     "route.온체인": ("온체인", "On-chain"),
     "region.GLOBAL": ("해외 거래소", "Overseas exchange"),
@@ -162,7 +163,7 @@ T: dict[str, tuple[str, str]] = {
     "region_short.KR": ("국내", "Korea"),
     "region_short.ONCHAIN": ("온체인", "On-chain"),
 
-    # 표 컬럼
+    # Table columns
     "col.signal": ("원문", "Signal"),
     "col.opportunity": ("기회", "Opportunity"),
     "col.asset": ("자산", "Asset"),
@@ -214,7 +215,7 @@ T: dict[str, tuple[str, str]] = {
     "col.logins": ("로그인", "Sign-ins"),
     "col.llm_actions": ("LLM 사용", "LLM actions"),
 
-    # ① Signal 분석
+    # ① Signal analysis
     "p1.intro": ("인플루언서 게시물과 DeFi·거래소 공지 원문을 AI Agent가 읽고, 실행할 수 있는 투자 기회로 구조화합니다. "
                  "경고·논평처럼 기회가 없는 글은 걸러내고, 같은 기회를 다룬 글은 하나로 합칩니다.",
                  "An AI agent reads influencer posts and DeFi or exchange announcements and turns them into "
@@ -241,7 +242,7 @@ T: dict[str, tuple[str, str]] = {
     "p1.skipped": ("제외된 원문 {n}건 (경고·논평·중복)", "Excluded signals: {n} (warnings, commentary, duplicates)"),
     "p1.raw_caption": ("원문은 수집한 그대로 보여줍니다 (한·영 혼합).", "Signals are shown as collected (Korean and English)."),
 
-    # ② 대시보드
+    # ② Dashboard
     "p2.risk_profile": ("투자 성향", "Risk profile"),
     "p2.risk_limit": ("리스크 한도", "Risk limit"),
     "p2.total": ("총 평가액", "Total value"),
@@ -286,7 +287,7 @@ T: dict[str, tuple[str, str]] = {
     "overseas.notice": ("정보 제공용입니다. 신고 대상 여부와 신고 방법은 세무 전문가와 확인하세요.",
                         "For information only. Confirm whether and how to report with a tax professional."),
 
-    # ③ 추천
+    # ③ Recommendations
     "p3.raw_response": ("mem9 원본 응답 보기 (JSON)", "Show raw mem9 response (JSON)"),
     "p3.raw_caption": ("GET /v1alpha2/mem9s/memories 응답 그대로입니다. 전체 {total}개 중 {n}개를 보여 줍니다. state, version은 "
                        "mem9가 기억을 조정할 때 쓰는 필드입니다.",
@@ -314,7 +315,7 @@ T: dict[str, tuple[str, str]] = {
     "p3.outcome.failed": ("실패", "failed"),
     "p3.outcome.pending": ("진행 중", "in progress"),
 
-    # 카드·스트리밍 (ui.common)
+    # Cards and streaming (ui.common)
     "card.account": ("{loc} 계정", "{loc} account"),
     "card.apy": ("연 {apy}%", "{apy}% APY"),
     "card.apy_none": ("수익률 미상", "APY unknown"),
@@ -345,7 +346,7 @@ T: dict[str, tuple[str, str]] = {
     "status.recording": ("거절을 기록하는 중…", "Recording the rejection…"),
     "status.done": ("완료", "Done"),
 
-    # ④ 승인
+    # ④ Approval
     "p4.none": ("승인을 기다리는 주문이 없습니다. '개인화 추천'에서 추천에 '실행 요청'을 눌러 주세요.",
                 "No orders are waiting for approval. Select 'Request execution' on a recommendation in "
                 "'Personalized recommendations'."),
@@ -540,7 +541,7 @@ T: dict[str, tuple[str, str]] = {
                         "(`ExecutionCommand`). Approval is enforced inside the tool code, and the engine accepts "
                         "both exchange API orders and on-chain orders."),
 
-    # ⑥ 접속 기록
+    # ⑥ Access log
     "p6.users": ("고유 사용자", "Unique users"),
     "p6.logins": ("로그인", "Sign-ins"),
     "p6.llm": ("LLM 사용", "LLM actions"),

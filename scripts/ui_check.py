@@ -1,14 +1,16 @@
-"""화면 자동 점검 (Streamlit AppTest, 브라우저 없이 실행).
+"""Automated UI check (Streamlit AppTest, runs without a browser).
 
     python scripts/ui_check.py
 
-확인 항목
-  1) 로그인 설정([auth])이 없고 DEMO_AUTH=off도 아니면 앱이 열리지 않는다
-  2) 사용자 3명 × 화면 6개 × 언어 2개 렌더링 시 예외가 없다
-  3) 영어 모드에서 화면 문구에 한글이 없다 (mem9 원문 보기·코드 블록·표 내용은 제외)
-  4) 누구나 자기 작업 공간의 '데모 초기화'를 쓸 수 있고, '접속 기록'(전체 초기화 포함)은 관리자에게만 보인다
-  5) 화면 사용 뒤 access_logs에 visit/login 이외의 사용 기록이 쌓인다 (LLM 동작은 run_scenario에서 확인)
-  6) Behind the scenes의 탭을 하나씩 열어도 예외가 없고(영어 모드는 한글 없음), LangGraph 노드 설명표가 그래프 노드와 일치한다
+Checks
+  1) Without login settings ([auth]) and without DEMO_AUTH=off, the app does not open
+  2) Rendering 3 users × 6 pages × 2 languages raises no exceptions
+  3) In English mode, page text has no Korean (excluding mem9 raw views, code blocks, and table contents)
+  4) Anyone can use '데모 초기화' ("Reset demo") for their own workspace; '접속 기록' ("Access log", including the full
+     reset) is visible only to admins
+  5) After using the pages, access_logs has usage records besides visit/login (LLM behavior: see run_scenario)
+  6) Opening each Behind the scenes tab raises no exceptions (no Korean in English mode), and the LangGraph node
+     table matches the graph nodes
 """
 from __future__ import annotations
 
@@ -40,7 +42,7 @@ def visible_texts(at: AppTest) -> list[str]:
 def main() -> int:
     failures = []
 
-    # 1) 로그인 설정이 없으면 막힌다
+    # 1) blocked without login settings
     os.environ.pop("DEMO_AUTH", None)
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
     at.run()
@@ -49,10 +51,10 @@ def main() -> int:
     if not blocked:
         failures.append("auth gate")
 
-    # 2~4) 우회 모드에서 화면 점검
+    # 2-4) page checks in bypass mode
     os.environ.update({"DEMO_AUTH": "off", "DEMO_DEV_EMAIL": ADMIN, "ADMIN_EMAILS": ADMIN})
     for lang in ("ko", "en"):
-        # 언어가 바뀌면 위젯 라벨·표시 이름이 바뀌므로 언어마다 새 세션으로 시작한다
+        # widget labels and display names change with the language, so start a new session per language
         at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=300)
         at.session_state["_lang"] = {"ko": "한국어", "en": "English"}[lang]
         at.run()
@@ -60,7 +62,7 @@ def main() -> int:
             at.session_state["user_id"] = uid
             for page in PAGES:
                 at.switch_page(page).run()
-                # Behind the scenes는 선택한 탭만 그리므로 탭을 하나씩 열어 본다 (사용자 1에서만)
+                # Behind the scenes draws only the selected tab, so open tabs one by one (user 1 only)
                 tabs = [x.label for x in at.tabs] if page == PAGES[4] and uid == 1 else [None]
                 for tab in tabs:
                     if tab is not None:
@@ -94,9 +96,9 @@ def main() -> int:
     viewer_has_reset = any(b.label in reset_labels for b in viewer.button)
     try:
         viewer.switch_page(PAGES[5]).run()
-        viewer_blocked = any(e.value for e in viewer.error)       # 주소로 들어와도 화면 안에서 막힘
+        viewer_blocked = any(e.value for e in viewer.error)       # blocked inside the page even when opened by URL
     except ValueError:
-        viewer_blocked = True                                       # 일반 사용자에게는 화면이 등록되지 않음
+        viewer_blocked = True                                       # page is not registered for regular users
     print(f"[4] 일반 사용자: 자기 초기화 {'✓' if viewer_has_reset else '✗'}, '접속 기록' 차단 "
           f"{'✓' if viewer_blocked else '✗'} / 관리자 전체 초기화 {'✓' if admin_has_reset_all else '✗'}")
     if not viewer_blocked:

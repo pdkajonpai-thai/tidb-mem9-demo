@@ -1,8 +1,8 @@
-"""LLM Structured Output용 Pydantic 모델 (ARCHITECTURE.md 5절).
+"""Pydantic models for LLM Structured Output (ARCHITECTURE.md section 5).
 
-LLM이 긴 ID(19자리 AUTO_RANDOM, mem9 UUID)를 옮겨 적다 틀리지 않도록
-후보와 기억은 프롬프트에 붙인 번호로 고르게 하고, 앱이 실제 ID로 바꾼다.
-숫자 범위(1~5, 0~1)는 스키마 제약 대신 앱에서 검증·보정한다.
+So the LLM does not make mistakes copying long IDs (19-digit AUTO_RANDOM, mem9 UUIDs), it picks candidates
+and memories by the numbers attached in the prompt, and the app maps them to the real IDs.
+Numeric ranges (1~5, 0~1) are validated and clamped in the app rather than by schema constraints.
 """
 from __future__ import annotations
 
@@ -13,33 +13,33 @@ from pydantic import BaseModel
 ActionType = Literal["swap", "lend", "stake", "lp"]
 
 
-# ---- 분석 그래프 ----
+# ---- Analysis graph ----
 
 class Opportunity(BaseModel):
-    title: str                     # 한국어 25자 이내, 예: "Aave v3 아비트럼 USDC 예치"
-    asset: str                     # 사용자가 넣는 자산, 예: "USDC" (LP는 스테이블 쪽)
-    chain: str                     # 예: "arbitrum"
-    protocol: str                  # 지원 프로토콜 목록의 이름, 예: "Aave v3"
+    title: str                     # max 25 Korean chars, e.g. "Aave v3 아비트럼 USDC 예치" (Aave v3 Arbitrum USDC deposit)
+    asset: str                     # asset the user puts in, e.g. "USDC" (for LP, the stablecoin side)
+    chain: str                     # e.g. "arbitrum"
+    protocol: str                  # name from the supported protocol list, e.g. "Aave v3"
     action_type: ActionType
     expected_apy: float | None
-    risk_level: int                # 1(낮음) ~ 5(높음)
+    risk_level: int                # 1 (low) ~ 5 (high)
     horizon: Literal["short", "mid", "long"]
     confidence: float              # 0 ~ 1
-    summary: str                   # 한국어 2~3문장, 임베딩용
+    summary: str                   # 2~3 Korean sentences, used for embedding
     rationale: str
 
 
 class SignalAnalysis(BaseModel):
     is_actionable: bool
-    reason: str                    # 기회가 없을 때 이유 (경고, 논평 등)
+    reason: str                    # reason when there is no opportunity (warning, commentary, etc.)
     opportunities: list[Opportunity]
 
 
-# ---- 추천 그래프 ----
+# ---- Recommendation graph ----
 
 class SearchIntent(BaseModel):
-    intent: str                    # 벡터 검색 질의 문장 (한국어 30~60자)
-    reason: str                    # 이 문장을 만든 이유 (Behind the scenes 표시용)
+    intent: str                    # vector search query sentence (30~60 Korean characters)
+    reason: str                    # why this sentence was made (shown in Behind the scenes)
 
 
 class ExecutionStep(BaseModel):
@@ -58,11 +58,11 @@ class CommandDraft(BaseModel):
 
 
 class RecommendationCard(BaseModel):
-    candidate_no: int              # 프롬프트의 후보 번호
+    candidate_no: int              # candidate number in the prompt
     rank: int
-    headline: str                  # 카드 제목 한 줄
-    rationale: str                 # 한국어 2~4문장, 참고한 기억을 자연스럽게 언급
-    memory_nos: list[int]          # 프롬프트의 기억 번호 (M1 → 1)
+    headline: str                  # one-line card title
+    rationale: str                 # 2~4 Korean sentences, naturally mentioning the memories used
+    memory_nos: list[int]          # memory numbers in the prompt (M1 → 1)
     command: CommandDraft
 
 
@@ -71,14 +71,14 @@ class RecommendationSet(BaseModel):
 
 
 class ExtractedFacts(BaseModel):
-    facts: list[str]               # mem9 추출 실패 시 대체 경로: 한국어 짧은 문장 1~3개
+    facts: list[str]               # fallback path when mem9 extraction fails: 1~3 short Korean sentences
 
 
 class Translations(BaseModel):
-    items: list[str]               # 화면 표시용 한국어 번역 (입력과 같은 순서·개수)
+    items: list[str]               # Korean translations for display (same order and count as the input)
 
 
-# ---- 실행 엔진 계약 ----
+# ---- Execution engine contract ----
 
 class ExecutionCommand(BaseModel):
     """기존 자동화 엔진에 넘어가는 계약. LLM 초안(CommandDraft)에 앱이 식별 정보를 채운다."""

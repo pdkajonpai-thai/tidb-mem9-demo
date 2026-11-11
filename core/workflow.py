@@ -1,9 +1,9 @@
-"""LangGraph 그래프 정의: analysis_graph(체크포인터 없음), recommend_graph(TiDB 체크포인터).
+"""LangGraph graph definitions: analysis_graph (no checkpointer), recommend_graph (TiDB checkpointer).
 
-recommend_graph는 두 곳에서 사람을 기다린다 (interrupt).
-- choose 노드: 실행할 추천 선택
-- execute_order tool 안: 실행 agent가 엔진 API를 호출할 때 주문 승인
-재개하면 멈췄던 노드·tool이 처음부터 다시 실행되므로, interrupt 앞에는 부수 효과를 두지 않는다.
+recommend_graph waits for a human in two places (interrupt).
+- choose node: choosing the recommendation to execute
+- inside the execute_order tool: order approval when the execution agent calls the engine API
+On resume the paused node/tool reruns from the start, so no side effects are placed before an interrupt.
 """
 from __future__ import annotations
 
@@ -24,16 +24,16 @@ from core.db import Database
 from core.workspace import thread_prefix
 
 LLM_RETRY = RetryPolicy(max_attempts=3)
-ANALYSIS_CONCURRENCY = 12      # 8 → 12: 원문 40건 분석 16초 → 12초 (2026-11-05 측정, 429 없음)
+ANALYSIS_CONCURRENCY = 12      # 8 → 12: analyzing 40 posts 16s → 12s (measured 2026-11-05, no 429s)
 
 
-# ---- 분석 그래프 ----
+# ---- Analysis graph ----
 
 class AnalysisState(TypedDict, total=False):
-    workspace: str                    # 방문자별 작업 공간 (core/workspace.py)
+    workspace: str                    # per-visitor workspace (core/workspace.py)
     signals: list[dict[str, Any]]
     catalog: dict[str, Any]
-    drafts: Annotated[list[dict[str, Any]], operator.add]     # 원문마다 병렬로 쌓임
+    drafts: Annotated[list[dict[str, Any]], operator.add]     # accumulated in parallel, one per source post
     skipped: Annotated[list[dict[str, Any]], operator.add]
     opportunities: list[dict[str, Any]]
     saved: int
@@ -64,18 +64,18 @@ def run_analysis(workspace: str, **config) -> AnalysisState:
                                        {"max_concurrency": ANALYSIS_CONCURRENCY, **config})
 
 
-# ---- 추천·승인 그래프 ----
+# ---- Recommendation/approval graph ----
 
 class RecommendState(TypedDict, total=False):
-    workspace: str                    # 방문자별 작업 공간 (core/workspace.py)
+    workspace: str                    # per-visitor workspace (core/workspace.py)
     user_id: int
     thread_id: str
-    lang: str                         # ko / en: 이 스레드에서 AI가 생성하는 문장의 언어
+    lang: str                         # ko / en: language of the sentences the AI generates in this thread
     profile: dict[str, Any]
     holdings: list[dict[str, Any]]
     exchanges: list[dict[str, Any]]
     memories: list[dict[str, Any]]
-    memories_response: dict[str, Any]  # 기억 조회 mem9 응답 원본 (화면 표시용, 앞 20개)
+    memories_response: dict[str, Any]  # raw mem9 response of the memory lookup (for display, first 20)
     intent: str
     intent_reason: str
     candidates: list[dict[str, Any]]
@@ -83,14 +83,14 @@ class RecommendState(TypedDict, total=False):
     attempts: int
     validation_errors: list[str]
     cards: list[dict[str, Any]]
-    # 실행 단계: 선택한 추천 → 실행 agent ⇄ execute_order tool (tool 안에서 승인 대기)
+    # execution phase: chosen recommendation → execution agent ⇄ execute_order tool (approval wait in the tool)
     selected: dict[str, Any] | None
     selected_at: str
     messages: Annotated[list[AnyMessage], add_messages]
     exec_tool_calls: int
     outcome: str                      # approved / rejected / failed
-    command: dict[str, Any]           # 승인 화면에 보이고 실행된 ExecutionCommand
-    memory_job: str                   # 승인·거절 뒤 mem9 기억 정리 작업 (core/memory_jobs.py)
+    command: dict[str, Any]           # ExecutionCommand shown on the approval screen and executed
+    memory_job: str                   # mem9 memory update job after approve/reject (core/memory_jobs.py)
     order: dict[str, Any]
     error: str
 
@@ -140,8 +140,9 @@ def get_analysis_graph():
 
 @lru_cache
 def get_recommend_graph():
-    # 체크포인터는 연결을 따로 쓴다. LangGraph는 체크포인트를 다음 노드와 동시에(durability="async") 쓰는데,
-    # 노드의 SQL과 한 연결(Lock)을 같이 쓰면 그 SQL이 체크포인트 쓰기가 끝날 때까지 기다린다
+    # The checkpointer uses its own connection. LangGraph writes checkpoints concurrently with the next node
+    # (durability="async"), and if it shared one connection (Lock) with the node's SQL, that SQL would wait
+    # until the checkpoint write finished
     saver = TiDBSaver(Database())
     saver.setup()
     return build_recommend_graph(saver)

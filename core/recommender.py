@@ -1,9 +1,9 @@
-"""추천·승인 그래프(recommend_graph) 노드 함수와 실행 agent의 tool.
+"""Node functions of the recommendation/approval graph (recommend_graph) and the execution agent's tool.
 
 recall_memory → build_intent → search_candidates → recommend → validate → save_recommendations
-→ choose(interrupt: 실행할 추천 선택) → exec_agent ⇄ tools(execute_order: 검증 → 시뮬레이션
-→ interrupt: 주문 승인 → 엔진 실행 또는 거절 기록)
-ARCHITECTURE.md 2.4.2절 참고.
+→ choose (interrupt: choose the recommendation to execute) → exec_agent ⇄ tools (execute_order: validate
+→ simulate → interrupt: order approval → engine execution or rejection record)
+See ARCHITECTURE.md section 2.4.2.
 """
 from __future__ import annotations
 
@@ -29,13 +29,14 @@ from core.overseas import overseas_locations, overseas_status
 from core.schemas import ExecutionCommand, ExecutionStep, ExtractedFacts, RecommendationSet, SearchIntent
 
 MAX_CARDS = 3
-MAX_ATTEMPTS = 2           # 검증 실패 시 1회 재생성
-MAX_TOOL_CALLS = 3         # 실행 agent가 execute_order를 부를 수 있는 최대 횟수 (검증 오류 수정 포함)
+MAX_ATTEMPTS = 2           # regenerate once on validation failure
+MAX_TOOL_CALLS = 3         # max times the execution agent may call execute_order (including validation-error fixes)
 MAX_SLIPPAGE_BPS = 100
-INSIGHT_WAIT_SECONDS = 15   # 성공한 추출은 3~7초 안에 끝났다. 넘으면 Claude 대체 경로
+INSIGHT_WAIT_SECONDS = 15   # successful extractions finished within 3~7s. Beyond this, the Claude fallback path
 COMMAND_TTL = timedelta(minutes=30)
 
-# 핵심 쇼케이스 쿼리 (ARCHITECTURE.md 3.3): 벡터 유사도 + 보유 자산·거래소 체인·리스크 한도를 한 SQL로
+# Core showcase query (ARCHITECTURE.md section 3.3): vector similarity + holdings, exchange chains, and risk
+# limit in one SQL
 HYBRID_SQL = """
 SELECT o.id, o.title, o.asset, o.chain, p.name AS protocol, p.audited, o.protocol_id, o.strategy_id,
        o.action_type, o.expected_apy, o.risk_level, o.horizon, o.summary,
@@ -94,7 +95,7 @@ FACTS_SYSTEM = """사용자가 투자 추천을 승인하거나 거절하며 남
 
 
 def plain(value: Any) -> Any:
-    """DB 값(Decimal, datetime)을 체크포인트·JSON에 저장할 수 있는 값으로 바꾼다."""
+    """Converts DB values (Decimal, datetime) into values that can be stored in checkpoints and JSON."""
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, (datetime, date)):
@@ -111,9 +112,10 @@ def first_token(name: str) -> str:
 
 
 def step_errors(state: dict, target: dict, steps: list[dict]) -> list[str]:
-    """실행 단계를 보유 수량·체인·거래소·슬리피지로 검증한다 (추천 검증과 execute_order tool이 함께 쓴다).
+    """Validates execution steps against holdings, chain, exchange, and slippage (shared by recommendation
+    validation and the execute_order tool).
 
-    target은 후보 또는 추천 카드이며 chain, protocol 키를 쓴다.
+    target is a candidate or a recommendation card, and its chain and protocol keys are used.
     """
     held = {(h["asset_symbol"].upper(), h["chain"].lower()): h["amount"] for h in state["holdings"]}
     accounts = {first_token(e["name"]): {c.strip() for c in e["chains"].split(",")} for e in state["exchanges"]}
@@ -122,7 +124,7 @@ def step_errors(state: dict, target: dict, steps: list[dict]) -> list[str]:
     errors = []
     first = steps[0]
     key = (first["from_asset"].upper(), first["chain"].lower())
-    # 입력 자산이 여러 단계에 나뉘어 들어가면(LP: 스왑분 + 예치분) 합계로 본다
+    # If the input asset is split across several steps (LP: swap part + deposit part), use the total
     total = sum(s["amount"] for s in steps if (s["from_asset"].upper(), s["chain"].lower()) == key)
     if key not in held:
         errors.append(f"{key[0]}({key[1]})를 보유하고 있지 않습니다")
@@ -149,7 +151,7 @@ def step_errors(state: dict, target: dict, steps: list[dict]) -> list[str]:
     return errors
 
 
-# ---- 프롬프트 구성 ----
+# ---- Prompt building ----
 
 def context_prompt(state: dict) -> str:
     p = state["profile"]
@@ -173,13 +175,13 @@ def candidates_prompt(candidates: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ---- 노드 ----
+# ---- Nodes ----
 
 def load_memories(app_id: str) -> tuple[list[dict], dict]:
-    """추천에 쓸 기억 전체와 mem9 첫 페이지 응답(화면의 원본 응답 보기용)."""
-    # 직전 승인·거절의 기억 정리가 뒤에서 진행 중이면 끝나기를 기다린다 (2회차가 새 기억을 반영하도록)
+    """All memories for the recommendation, plus the first mem9 page response (for the raw response view on screen)."""
+    # If the memory update from the last approve/reject is still running, wait for it (so round 2 reflects new memories)
     memory_jobs.wait_pending(app_id, timeout=INSIGHT_WAIT_SECONDS + 10)
-    # q 검색은 단어 일치 방식이라 쓰지 않고 전체 목록을 가져온다 (ARCHITECTURE.md 1.2)
+    # q search is word matching, so it is not used; fetch the full list instead (ARCHITECTURE.md section 1.2)
     memories, first = get_mem9().list_all(app_id)
     return [m for m in memories if m["memory_type"] in ("pinned", "insight")], first
 
@@ -187,7 +189,8 @@ def load_memories(app_id: str) -> tuple[list[dict], dict]:
 def recall_memory(state: dict) -> dict:
     db = get_db()
     uid = state["user_id"]
-    # mem9 조회(기억 정리 대기 포함)를 아래 SQL과 동시에 진행한다. 작업 공간(ContextVar)을 넘겨 호출 기록이 제자리에 남게 한다
+    # Run the mem9 lookup (including the wait for memory updates) concurrently with the SQL below. Pass the workspace
+    # (ContextVar) so call records land in the right place
     with ThreadPoolExecutor(max_workers=1) as pool:
         recalled = pool.submit(contextvars.copy_context().run, load_memories,
                                user_app_id(uid, state["workspace"]))
@@ -235,7 +238,8 @@ def recommend(state: dict) -> dict:
     prompt = f"{context_prompt(state)}\n\n후보 (하이브리드 검색 결과)\n{candidates_prompt(state['candidates'])}"
     if errors := state.get("validation_errors"):
         prompt += "\n\n이전 응답에서 다음 문제가 발견되었습니다. 고쳐서 다시 답하세요.\n" + "\n".join(f"- {e}" for e in errors)
-    # thinking 요약을 스트리밍으로 받아 화면의 "AI 검토 메모"에 보여준다 (본문 JSON보다 몇 초 먼저 도착)
+    # Stream the thinking summary and show it as "AI 검토 메모" ("AI review notes") on screen (arrives a few
+    # seconds before the body JSON)
     out: RecommendationSet = structured(
         RecommendationSet, effort="low", thinking={"type": "adaptive", "display": "summarized"},
     ).invoke([SystemMessage(RECOMMEND_SYSTEM + output_language_rule(state.get("lang", "ko"))), HumanMessage(prompt)])
@@ -243,7 +247,7 @@ def recommend(state: dict) -> dict:
 
 
 def validate(state: dict) -> dict:
-    """LLM이 만든 카드를 보유 수량·거래소·체인·슬리피지로 다시 검증하고, 실제 ID로 바꾼다."""
+    """Re-validates the LLM's cards against holdings, exchange, chain, and slippage, and maps them to real IDs."""
     candidates, memories = state["candidates"], state["memories"]
     errors, cards, used = [], [], set()
     for d in sorted(state.get("drafts", []), key=lambda d: d["rank"]):
@@ -270,7 +274,7 @@ def validate(state: dict) -> dict:
             **{k: cand[k] for k in ("title", "protocol", "chain", "asset", "action_type",
                                     "expected_apy", "risk_level", "distance", "strategy_id")},
             "memory_refs": [memories[n - 1] for n in d["memory_nos"] if 1 <= n <= len(memories)],
-            # 제안 명령: 실행 agent가 execute_order tool을 부를 때 출발점으로 쓴다
+            # proposed command: the starting point when the execution agent calls the execute_order tool
             "proposed_steps": steps,
         })
         if len(cards) == MAX_CARDS:
@@ -290,7 +294,7 @@ def no_result(state: dict) -> dict:
 
 
 def save_recommendations(state: dict) -> dict:
-    # 카드 3개를 한 번에 넣고(여러 행 INSERT) 만들어진 ID를 순위로 다시 읽는다: DB 왕복 2번
+    # Insert the 3 cards at once (multi-row INSERT) and read back the created IDs by rank: 2 DB round trips
     db = get_db()
     model = get_settings().llm_model
     db.executemany(
@@ -309,10 +313,10 @@ def save_recommendations(state: dict) -> dict:
     return {"cards": [{**c, "recommendation_id": ids[c["rank"]]} for c in state["cards"]]}
 
 
-# ---- 실행할 추천 선택 ----
+# ---- Choosing the recommendation to execute ----
 
 def choose(state: dict) -> dict:
-    # interrupt가 맨 앞에 있으므로, 재개 시 아래 DB 쓰기는 한 번만 실행된다
+    # interrupt comes first, so on resume the DB writes below run only once
     pick = interrupt({"type": "choose_card", "thread_id": state["thread_id"], "cards": state["cards"]})
     db = get_db()
     if pick.get("action") == "dismiss":
@@ -346,7 +350,7 @@ def selected_card_prompt(state: dict, card: dict) -> str:
             f"보유 자산\n{holdings}\n\n거래소 계정 (지원 체인)\n{exchanges}")
 
 
-# ---- 실행 agent ----
+# ---- Execution agent ----
 
 EXEC_SYSTEM = """당신은 주문 실행 도우미입니다. 사용자가 고른 추천을 실행 엔진에 주문으로 제출합니다.
 
@@ -363,17 +367,21 @@ EXEC_SYSTEM = """당신은 주문 실행 도우미입니다. 사용자가 고른
 
 def remember_decision(job: memory_jobs.Job, state: dict, card: dict, approve: bool, reason: str,
                       order: dict | None = None) -> None:
-    """결정을 mem9에 기록한다 (memory_jobs 백그라운드 작업). 단계는 job.step으로 남겨 화면 타임라인에 보인다.
+    """Records the decision in mem9 (memory_jobs background job). Steps are recorded with job.step and shown
+    in the on-screen timeline.
 
-    순서: 이유 ingest → insight 대기(또는 Claude 대체 추출) → 결정 기록(pinned) → 체결 기록(승인 시)
-    → 새 기억의 두 언어 번역을 캐시에 미리 저장(별도 백그라운드).
-    결정 기록에도 이유가 들어가므로, 먼저 저장하면 mem9가 같은 내용으로 보고 추출을 건너뛸 수 있다.
+    Order: reason ingest → wait for insights (or Claude fallback extraction) → decision record (pinned)
+    → fill record (on approval) → pre-store both-language translations of new memories in the cache
+    (separate background job).
+    The decision record also contains the reason, so saving it first could make mem9 treat it as the same
+    content and skip extraction.
     """
     mem9 = get_mem9()
     app_id = user_app_id(state["user_id"], state["workspace"])
     lang = state.get("lang", "ko")
     if reason:
-        # 사용자 발화만 보낸다: 한국어 추천 문장을 함께 보내면 추출이 일어나지 않았다 (ARCHITECTURE.md 1.2)
+        # Send only the user's utterance: when the Korean recommendation text was sent along, no extraction happened
+        # (ARCHITECTURE.md section 1.2)
         known = {m["id"] for m in mem9.list_memories(app_id, memory_type="insight")}
         start = time.perf_counter()
         status = mem9.ingest(app_id, [{"role": "user", "content": reason}])
@@ -419,8 +427,9 @@ def remember_decision(job: memory_jobs.Job, state: dict, card: dict, approve: bo
         job.events.append({"kind": "execution", "content": text, "id": saved.get("id")})
         job.step("execution_saved", text=text)
 
-    # 새 기억을 두 언어로 미리 번역해 둔다. mem9 insight는 영어로 저장되므로, 다음 추천 화면이 번역을 기다리지 않게 한다.
-    # 다음 추천의 기억 조회(wait_pending)가 번역까지 기다리지 않도록 작업 밖에서 돌린다
+    # Pre-translate new memories into both languages. mem9 insights are stored in English, so this keeps the
+    # next recommendation screen from waiting on translation.
+    # Run it outside the job so the next recommendation's memory lookup (wait_pending) doesn't wait for it
     memory_jobs.run_later(translations.prepare, [e["content"] for e in job.events])
 
 
@@ -440,8 +449,9 @@ def execute_order(
         steps: 실행 순서대로의 주문 단계.
         note: 승인 화면에 보일 주문 요약 (출력 언어로 한 문장).
     """
-    # 재개하면 이 tool이 처음부터 다시 실행된다. 그래서 interrupt 앞에는 부수 효과 없는 검증·시뮬레이션만 두고,
-    # 명령 ID와 만료 시각은 tool 호출 ID와 선택 시각에서 만들어 승인 화면에 보인 명령과 실행 명령을 같게 한다.
+    # On resume this tool reruns from the start. So only side-effect-free validation and simulation come before
+    # the interrupt, and the command ID and expiry are derived from the tool call ID and the selection time, so
+    # the command shown on the approval screen is the same as the one executed.
     card = state["selected"]
     calls = state.get("exec_tool_calls", 0) + 1
     steps = [s.model_dump() if hasattr(s, "model_dump") else dict(s) for s in steps]
@@ -463,7 +473,8 @@ def execute_order(
     ).model_dump()
     simulation = engine_mock.simulate(steps, card["expected_apy"], command_id=command["command_id"])
     db = get_db()
-    # 해외 거래소 계정 안의 주문이면 해외 잔고 정보(신고 참고)를 승인 화면에 함께 보여준다 (읽기만 함)
+    # For an order inside an overseas exchange account, also show overseas balance info (reporting reference)
+    # on the approval screen (read-only)
     overseas = None
     if {s["chain"].lower() for s in steps} & overseas_locations(db):
         overseas = overseas_status(db, state["user_id"])

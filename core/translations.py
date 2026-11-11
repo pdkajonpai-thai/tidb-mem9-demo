@@ -1,7 +1,7 @@
-"""표시용 번역과 TiDB 번역 캐시(translations 테이블).
+"""Display translations and the TiDB translation cache (translations table).
 
-화면(ui/common.py)과 백그라운드 작업(승인·거절 뒤 mem9 기억 정리)이 함께 쓴다.
-저장된 원본(mem9 기억, 분석 결과 등)은 바꾸지 않고, 번역문만 캐시에 쌓는다.
+Shared by the screens (ui/common.py) and background jobs (mem9 memory update after approve/reject).
+Stored originals (mem9 memories, analysis results, etc.) are not changed; only translations go into the cache.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def src_hash(text: str) -> str:
 
 
 def cached_translate(texts: list[str], target: str) -> list[str]:
-    """캐시에서 먼저 찾고, 없는 문장만 Claude로 번역해 저장한다."""
+    """Looks in the cache first, and translates with Claude and stores only the sentences not found."""
     need = list(dict.fromkeys(x for x in texts if needs_translation(x, target)))
     if not need:
         return list(texts)
@@ -42,7 +42,7 @@ def cached_translate(texts: list[str], target: str) -> list[str]:
 
 
 def prepare(texts: list[str]) -> None:
-    """두 언어의 번역을 미리 만들어 캐시에 넣는다. 실패해도 화면에서 다시 시도하므로 넘어간다."""
+    """Pre-builds translations in both languages into the cache. Failures are ignored since the screen retries."""
     for target in LANGS:
         try:
             cached_translate(texts, target)

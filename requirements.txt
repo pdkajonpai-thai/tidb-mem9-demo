@@ -1,5 +1,5 @@
-# 2026-10-29 로컬(Python 3.12)에서 스모크 테스트·시나리오(한·영)·화면 점검을 통과한 버전으로 고정합니다.
-# 버전을 올릴 때는 scripts/smoke_test.py, run_scenario.py(--lang ko/en), ui_check.py를 다시 통과시킵니다.
+# Pinned to the versions that passed the smoke test, scenarios (ko/en), and UI check locally (Python 3.12) on 2026-10-29.
+# When upgrading, make sure scripts/smoke_test.py, run_scenario.py (--lang ko/en), and ui_check.py pass again.
 streamlit[auth]==1.66.1
 altair==6.3.0
 pymysql==1.2.3

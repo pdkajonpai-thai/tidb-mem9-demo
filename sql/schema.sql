@@ -1,27 +1,27 @@
--- TiDB 스키마 (ARCHITECTURE.md 3절).
--- scripts/seed.py가 주석 줄을 뺀 뒤 세미콜론 단위로 나눠 실행한다.
--- LangGraph 체크포인트 테이블(lg_*)은 TiDBSaver.setup()이 만든다.
--- 데모 초기화를 단순하게 하려고 외래 키 대신 인덱스만 둔다.
+-- TiDB schema (ARCHITECTURE.md section 3).
+-- scripts/seed.py strips comment lines, then splits on semicolons and runs each statement.
+-- LangGraph checkpoint tables (lg_*) are created by TiDBSaver.setup().
+-- Indexes only, no foreign keys, to keep the demo reset simple.
 
--- 사용자 프로필
+-- User profiles
 CREATE TABLE IF NOT EXISTS users (
   id             INT PRIMARY KEY,
   name           VARCHAR(64)  NOT NULL,
   name_en        VARCHAR(64)  NOT NULL,
   risk_profile   VARCHAR(16)  NOT NULL,          -- conservative / balanced / aggressive
-  max_risk_level TINYINT      NOT NULL,          -- 1(낮음) ~ 5(높음)
+  max_risk_level TINYINT      NOT NULL,          -- 1 (low) to 5 (high)
   base_currency  VARCHAR(8)   NOT NULL DEFAULT 'KRW'
 );
 
--- 거래소·프로토콜 접근 경로
+-- Exchanges and protocol access paths
 CREATE TABLE IF NOT EXISTS exchanges (
   id     INT PRIMARY KEY,
   name   VARCHAR(64) NOT NULL,
   type   VARCHAR(8)  NOT NULL,                   -- CEX / DEX
-  region VARCHAR(8)  NOT NULL                    -- KR(국내 거래소) / GLOBAL(해외 거래소) / ONCHAIN
+  region VARCHAR(8)  NOT NULL                    -- KR (domestic exchange) / GLOBAL (overseas exchange) / ONCHAIN
 );
 
--- 위치(chain) 컬럼: 온체인 네트워크(arbitrum 등) 또는 거래소 계정(binance 등)
+-- Location (chain) column: an on-chain network (e.g. arbitrum) or an exchange account (e.g. binance)
 
 CREATE TABLE IF NOT EXISTS exchange_chains (
   exchange_id INT         NOT NULL,
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS user_exchange_accounts (
   PRIMARY KEY (user_id, exchange_id)
 );
 
--- 토큰 마스터
+-- Token master
 CREATE TABLE IF NOT EXISTS assets (
   symbol   VARCHAR(16) NOT NULL,
   chain    VARCHAR(32) NOT NULL,
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS assets (
   PRIMARY KEY (symbol, chain)
 );
 
--- 실시간 보유 자산
+-- Real-time holdings
 CREATE TABLE IF NOT EXISTS user_holdings (
   user_id      INT            NOT NULL,
   asset_symbol VARCHAR(16)    NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS user_holdings (
   PRIMARY KEY (user_id, asset_symbol, chain)
 );
 
--- 해외 거래소 월말 잔고 이력 (해외 계좌 신고 기준 5억 원 대비 참고 정보 표시)
+-- Month-end balance history on overseas exchanges (shown as reference against the KRW 500M overseas account reporting threshold)
 CREATE TABLE IF NOT EXISTS balance_snapshots (
   user_id      INT            NOT NULL,
   month_end    DATE           NOT NULL,
@@ -67,18 +67,18 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
   PRIMARY KEY (user_id, month_end, exchange_id, asset_symbol)
 );
 
--- DeFi 프로토콜과 거래소 예치·스테이킹 상품 (이름 + 위치 단위)
+-- DeFi protocols and exchange deposit/staking products (one row per name + location)
 CREATE TABLE IF NOT EXISTS protocols (
   id         INT PRIMARY KEY,
   name       VARCHAR(64)    NOT NULL,
   chain      VARCHAR(32)    NOT NULL,
   tvl_usd    DECIMAL(20, 2),
   audited    BOOLEAN        NOT NULL,
-  risk_score TINYINT        NOT NULL,            -- 1(낮음) ~ 5(높음)
+  risk_score TINYINT        NOT NULL,            -- 1 (low) to 5 (high)
   UNIQUE KEY uk_protocol (name, chain)
 );
 
--- 실행 엔진이 이해하는 전략 템플릿
+-- Strategy templates the execution engine understands
 CREATE TABLE IF NOT EXISTS strategies (
   id              INT PRIMARY KEY,
   type            VARCHAR(16) NOT NULL,          -- swap / lend / stake / lp
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS strategies (
   action_template JSON NOT NULL
 );
 
--- 수집 원문 (합성 시드)
+-- Collected raw signals (synthetic seed)
 CREATE TABLE IF NOT EXISTS raw_signals (
   id        INT PRIMARY KEY,
   source    VARCHAR(32)   NOT NULL,              -- x / telegram / blog / youtube / announcement
@@ -95,15 +95,15 @@ CREATE TABLE IF NOT EXISTS raw_signals (
   posted_at DATETIME      NOT NULL
 );
 
--- 방문자별 작업 공간 (Google 계정 이메일의 해시. 이메일 자체는 저장하지 않음)
--- 분석 결과·추천·체크포인트·mem9 기억을 작업 공간마다 따로 두어, 초기화도 각자 한다
+-- Per-visitor workspaces (hash of the Google account email; the email itself is not stored)
+-- Analysis results, recommendations, checkpoints, and mem9 memories are kept per workspace, so each resets independently
 CREATE TABLE IF NOT EXISTS workspaces (
   id         VARCHAR(16) PRIMARY KEY,
   created_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
   reset_at   TIMESTAMP   NULL
 );
 
--- 작업 공간별로 분석을 마친 원문
+-- Raw signals already analyzed, per workspace
 CREATE TABLE IF NOT EXISTS analyzed_signals (
   workspace   VARCHAR(16) NOT NULL,
   signal_id   INT         NOT NULL,
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS analyzed_signals (
   PRIMARY KEY (workspace, signal_id)
 );
 
--- LLM이 구조화한 투자 기회 (summary를 DB가 자동 임베딩)
+-- Investment opportunities structured by the LLM (the DB auto-embeds summary)
 CREATE TABLE IF NOT EXISTS opportunities (
   id           BIGINT PRIMARY KEY AUTO_RANDOM,
   workspace    VARCHAR(16)  NOT NULL,
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
   VECTOR INDEX idx_opp_vec ((VEC_COSINE_DISTANCE(summary_vec)))
 );
 
--- 추천 이력 (LangGraph 스레드와 연결)
+-- Recommendation history (linked to LangGraph threads)
 CREATE TABLE IF NOT EXISTS recommendations (
   id             BIGINT PRIMARY KEY AUTO_RANDOM,
   workspace      VARCHAR(16)  NOT NULL,
@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS recommendations (
   `rank`         TINYINT      NOT NULL,
   rationale      TEXT         NOT NULL,
   memory_refs    JSON,
-  command        JSON,                           -- ExecutionCommand (승인 화면 미리보기)
+  command        JSON,                           -- ExecutionCommand (preview on the approval screen)
   model          VARCHAR(64)  NOT NULL,
   status         VARCHAR(24)  NOT NULL DEFAULT 'AWAITING_APPROVAL',  -- / APPROVED / REJECTED
   decided_at     TIMESTAMP    NULL,
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS recommendations (
   KEY idx_rec_thread (thread_id)
 );
 
--- 실행 명령과 상태 (Mock 엔진)
+-- Execution orders and status (mock engine)
 CREATE TABLE IF NOT EXISTS execution_orders (
   id                BIGINT PRIMARY KEY AUTO_RANDOM,
   recommendation_id BIGINT      NOT NULL,
@@ -171,15 +171,15 @@ CREATE TABLE IF NOT EXISTS execution_orders (
   KEY idx_order_rec (recommendation_id)
 );
 
--- 접속·사용 기록 (로그인, LLM 사용). 데모 초기화로 지우지 않는다 (scripts/seed.py APP_TABLES에 넣지 않음)
+-- Access and usage logs (sign-ins, LLM usage). Not cleared by demo reset (not in APP_TABLES in scripts/seed.py)
 CREATE TABLE IF NOT EXISTS access_logs (
   id            BIGINT PRIMARY KEY AUTO_RANDOM,
   at            TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
   event         VARCHAR(32)   NOT NULL,          -- visit / login / logout / llm:* / admin:*
   email         VARCHAR(255),
   name          VARCHAR(255),
-  ip            VARCHAR(64),                     -- 비워 둠: 현재 호스팅은 실제 접속자 IP를 전달하지 않음
-  forwarded_for VARCHAR(255),                    -- 비워 둠: IP를 전달하는 호스팅으로 옮기면 사용
+  ip            VARCHAR(64),                     -- left empty: the current hosting doesn't pass the real client IP
+  forwarded_for VARCHAR(255),                    -- left empty: used if moved to hosting that passes the IP
   user_agent    VARCHAR(512),
   session_id    VARCHAR(64),
   detail        JSON,
@@ -187,11 +187,11 @@ CREATE TABLE IF NOT EXISTS access_logs (
   KEY idx_access_email_at (email, at)
 );
 
--- 화면 표시용 번역 캐시 (원문 해시 + 대상 언어). 원문이 같으면 다시 번역하지 않는다.
--- 앱 재시작·다른 세션에서도 재사용한다. 원문 기준 캐시라 데모 초기화로 지우지 않는다 (APP_TABLES에 넣지 않음)
+-- Translation cache for display (source hash + target language). Identical source text is not translated again.
+-- Reused across app restarts and other sessions. Keyed on source text, so not cleared by demo reset (not in APP_TABLES)
 CREATE TABLE IF NOT EXISTS translations (
-  src_hash    CHAR(64)    NOT NULL,              -- 원문 SHA-256
-  lang        VARCHAR(8)  NOT NULL,              -- 대상 언어 (ko / en)
+  src_hash    CHAR(64)    NOT NULL,              -- SHA-256 of the source text
+  lang        VARCHAR(8)  NOT NULL,              -- target language (ko / en)
   src         TEXT        NOT NULL,
   text        TEXT        NOT NULL,
   created_at  TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,

@@ -1,5 +1,6 @@
-"""⑤ Behind the scenes: SQL Inspector, mem9 호출(요청·응답), 엔진 호출, LangGraph(그래프, 노드 설명, 실행 경로와 시간,
-체크포인트 이력), 기술 설명(mem9 기억 압축과 손실, LangGraph 구성), 아키텍처."""
+"""⑤ Behind the scenes: SQL Inspector, mem9 calls (request/response), engine calls, LangGraph (graph, node
+descriptions, execution path and timing, checkpoint history), technical notes (mem9 memory compression and loss, LangGraph setup),
+architecture."""
 import json
 
 import streamlit as st
@@ -20,7 +21,7 @@ def pick(pair: tuple[str, str]) -> str:
 
 
 def mermaid(code: str, alt: str, height: int = 520) -> None:
-    # 코드가 만든 그래프 정의와 고정 그림만 넣는다 (LLM 출력·사용자 입력은 넣지 않음)
+    # only graph definitions built by code and fixed diagrams go in (no LLM output or user input)
     theme = "dark" if st.context.theme.type == "dark" else "neutral"
     st.iframe(
         f"""<div class="mermaid">{code}</div>
@@ -30,7 +31,7 @@ def mermaid(code: str, alt: str, height: int = 520) -> None:
 
 
 db = get_db()
-# 선택한 탭만 그린다. 숨은 탭 안에서 만든 Mermaid iframe은 크기가 0이라 그림이 그려지지 않는다
+# Draw only the selected tab. A Mermaid iframe created inside a hidden tab has zero size, so nothing renders
 tab_sql, tab_mem9, tab_engine, tab_graph, tab_explain, tab_arch = st.tabs(
     [t("p5.tab_sql"), t("p5.tab_mem9"), t("p5.tab_engine"), t("p5.tab_graph"), t("p5.tab_explain"), t("p5.tab_arch")],
     key="behind_tab", on_change="rerun")
@@ -93,7 +94,8 @@ if tab_graph.open:
         visited = list(dict.fromkeys(n["node"] for r in runs for n in r["nodes"] if n["node"] in explain.GRAPH_NODES))
 
         st.markdown(t("p5.graph_title"))
-        # LangGraph 기본 노드 색(밝은 보라)은 어두운 테마에서 글자가 보이지 않아 Mermaid 테마 색을 쓰고, 지나간 노드만 칠한다
+        # LangGraph's default node color (light purple) is unreadable in dark theme, so use Mermaid theme colors
+        # and fill only the nodes that were visited
         graph_code = workflow.get_recommend_graph().get_graph().draw_mermaid(with_styles=False)
         if visited:
             graph_code += f"\t{explain.VISITED_STYLE}\n\tclass {','.join(visited)} visited;\n"

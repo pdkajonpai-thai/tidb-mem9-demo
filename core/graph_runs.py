@@ -1,7 +1,7 @@
-"""그래프 실행 시간 기록: 노드가 끝날 때마다 시각을 남겨 노드별 걸린 시간을 계산한다.
+"""Graph run timing: records the time each node finishes to compute the time taken per node.
 
-recommend_graph는 노드가 순서대로 실행되므로, 앞 노드가 끝난 때부터 이 노드가 끝난 때까지를
-이 노드의 시간으로 본다. Behind the scenes의 LangGraph 탭과 run_scenario.py --timing이 함께 쓴다.
+recommend_graph runs its nodes in sequence, so a node's time is taken as from when the previous node
+finished until this node finished. Used by both the LangGraph tab of Behind the scenes and run_scenario.py --timing.
 """
 from __future__ import annotations
 
@@ -11,16 +11,16 @@ from typing import Any, Iterator
 
 from core.call_log import CallLog
 
-runs = CallLog(maxlen=30)      # 작업 공간별 최근 실행 (최신순으로 읽는다)
+runs = CallLog(maxlen=30)      # recent runs per workspace (read newest first)
 
 INTERRUPT = "__interrupt__"
 
 
 def stream_timed(graph, graph_input, config: dict, *, phase: str,
                  stream_mode: tuple[str, ...] = ("updates",)) -> Iterator[tuple[str, Any]]:
-    """graph.stream의 (mode, payload)를 그대로 넘겨주면서 노드별 시간을 잰다. 끝나면 runs에 기록한다.
+    """Passes graph.stream's (mode, payload) through unchanged while timing each node. Records to runs when done.
 
-    phase: recommend(추천) / execute(실행 요청) / decide(승인·거절)
+    phase: recommend (recommendation) / execute (execution request) / decide (approve/reject)
     """
     started_at = datetime.now().strftime("%H:%M:%S")
     start = last = time.perf_counter()
@@ -39,6 +39,6 @@ def stream_timed(graph, graph_input, config: dict, *, phase: str,
 
 
 def format_run(run: dict) -> str:
-    """한 줄 요약: recall_memory 812ms, build_intent 2,140ms, ..."""
+    """One-line summary: recall_memory 812ms, build_intent 2,140ms, ..."""
     parts = [f"{n['node']} {n['ms']:,}ms" for n in run["nodes"] if n["node"] != INTERRUPT]
     return f"{run['total_ms']:,}ms = " + ", ".join(parts)

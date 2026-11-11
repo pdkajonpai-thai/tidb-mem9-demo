@@ -1,4 +1,4 @@
-# 비밀 값
+# Secrets
 .env
 .streamlit/secrets.toml
 
@@ -7,10 +7,10 @@
 __pycache__/
 *.pyc
 
-# OS / 편집기
+# OS / editors
 .DS_Store
 .vscode/
 .idea/
 
-# 내부 전용 (고객사 맥락·영업 메모). 저장소에 올리지 않는다
+# Internal only (customer context, sales notes). Not committed to the repository
 internal/

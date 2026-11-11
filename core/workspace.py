@@ -1,8 +1,11 @@
-"""방문자별 작업 공간: 분석 결과·추천·체크포인트·mem9 기억을 Google 계정마다 따로 둔다.
+"""Per-visitor workspaces: analysis results, recommendations, checkpoints, and mem9 memories are kept separate
+per Google account.
 
-- 작업 공간 ID는 이메일의 SHA-256 앞 12자리다 (이메일 자체는 저장하지 않는다).
-- 사용자 A·B·C의 프로필·보유 자산·계정·잔고 이력은 모든 작업 공간이 같은 시드를 쓴다 (주문은 Mock이라 바뀌지 않음).
-- 처음 쓰는 작업 공간은 mem9에 온보딩 기억을 기록하고 시작한다. 초기화도 자기 작업 공간만 되돌린다.
+- The workspace ID is the first 12 characters of the email's SHA-256 (the email itself is not stored).
+- Users A/B/C's profiles, holdings, accounts, and balance history use the same seed in every workspace
+  (orders are mocked, so these do not change).
+- A workspace used for the first time starts by writing onboarding memories to mem9. A reset also only restores
+  its own workspace.
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ def workspace_id(email: str) -> str:
 
 
 def thread_prefix(workspace: str) -> str:
-    """추천 스레드 ID 앞부분. 초기화할 때 이 작업 공간의 체크포인트를 찾는 데 쓴다."""
+    """Prefix of recommendation thread IDs. Used on reset to find this workspace's checkpoints."""
     return f"rec_{workspace}_"
 
 
@@ -28,7 +31,7 @@ def _personas() -> list[dict]:
 
 
 def seed_memories(workspace: str, mem9: Mem9Client | None = None) -> dict[str, int]:
-    """작업 공간의 사용자별 기억을 비우고 온보딩 선호를 pinned 기억으로 기록한다."""
+    """Clears the per-user memories of the workspace and records onboarding preferences as pinned memories."""
     mem9 = mem9 or get_mem9()
     result = {}
     for user in _personas():
@@ -41,7 +44,7 @@ def seed_memories(workspace: str, mem9: Mem9Client | None = None) -> dict[str, i
 
 
 def ensure_workspace(workspace: str, db: Database | None = None) -> bool:
-    """처음 쓰는 작업 공간이면 mem9 기억을 준비한다. 새로 만들었으면 True."""
+    """Prepares mem9 memories if the workspace is used for the first time. True if newly created."""
     db = db or get_db()
     if db.query("SELECT 1 FROM workspaces WHERE id = %s", (workspace,), label="작업 공간: 확인"):
         return False
@@ -51,14 +54,15 @@ def ensure_workspace(workspace: str, db: Database | None = None) -> bool:
 
 
 def clear_analysis(workspace: str, db: Database | None = None) -> None:
-    """이 작업 공간의 분석 결과를 지우고 원문을 미분석 상태로 되돌린다."""
+    """Deletes this workspace's analysis results and returns source posts to the unanalyzed state."""
     db = db or get_db()
     db.execute("DELETE FROM opportunities WHERE workspace = %s", (workspace,), label="분석: 초기화")
     db.execute("DELETE FROM analyzed_signals WHERE workspace = %s", (workspace,), label="분석: 초기화")
 
 
 def reset_workspace(workspace: str, db: Database | None = None) -> None:
-    """이 작업 공간만 시작 상태로 되돌린다: 분석 결과, 추천·주문, 체크포인트, mem9 기억."""
+    """Resets only this workspace to its initial state: analysis results, recommendations/orders, checkpoints,
+    mem9 memories."""
     db = db or get_db()
     clear_analysis(workspace, db)
     db.execute(

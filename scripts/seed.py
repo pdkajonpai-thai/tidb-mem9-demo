@@ -1,12 +1,13 @@
-"""시드 데이터 적재, mem9 초기 기억 기록, 데모 초기화.
+"""Seed data loading, initial mem9 memory writes, and demo reset.
 
-    python scripts/seed.py              # 테이블 생성(없으면) → 데이터 초기화 → 시드 적재
-    python scripts/seed.py --recreate   # 앱 테이블을 지우고 다시 만든 뒤 위와 같이 진행 (스키마 변경 시)
+    python scripts/seed.py              # create tables (if missing) → reset data → load seed
+    python scripts/seed.py --recreate   # drop and recreate app tables, then proceed as above (on schema change)
 
-전체 초기화: 모든 작업 공간의 데이터, LangGraph 체크포인트(lg_*), 작업 공간 목록을 지운다.
-mem9 기억은 각 작업 공간을 다음에 쓸 때 비우고 다시 기록한다 (core/workspace.ensure_workspace).
-관리자 화면(⑥ 접속 기록)의 "전체 초기화" 버튼이 reset_demo()를 호출한다.
-방문자가 사이드바에서 누르는 "데모 초기화"는 자기 작업 공간만 되돌린다 (core/workspace.reset_workspace).
+Full reset: deletes data for all workspaces, LangGraph checkpoints (lg_*), and the workspace list.
+mem9 memories are cleared and rewritten the next time each workspace is used (core/workspace.ensure_workspace).
+The "전체 초기화" ("Reset everything") button on the admin page (⑥ Access log) calls reset_demo().
+"데모 초기화" ("Reset demo"), which visitors click in the sidebar, restores only their own workspace
+(core/workspace.reset_workspace).
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from core.db import Database, get_db  # noqa: E402
 DATA = ROOT / "data"
 SCHEMA = ROOT / "sql" / "schema.sql"
 
-# 삭제 순서 = 참조하는 쪽 먼저 (외래 키는 없지만 의미상 순서를 지킨다)
+# delete order = referencing tables first (no foreign keys, but keep the logical order)
 APP_TABLES = [
     "execution_orders", "recommendations", "opportunities", "analyzed_signals", "workspaces", "raw_signals",
     "balance_snapshots", "user_holdings", "user_exchange_accounts", "exchange_chains",
@@ -40,7 +41,7 @@ def load(name: str) -> Any:
 
 
 def schema_statements() -> list[str]:
-    # 주석 줄을 먼저 빼고 세미콜론으로 나눈다 (주석 안의 문자가 구분자로 읽히지 않도록)
+    # strip comment lines first, then split on semicolons (so characters inside comments aren't read as delimiters)
     lines = [line for line in SCHEMA.read_text(encoding="utf-8").splitlines()
              if not line.strip().startswith("--")]
     return [stmt.strip() for stmt in "\n".join(lines).split(";") if stmt.strip()]

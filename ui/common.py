@@ -1,7 +1,8 @@
-"""화면 공통 도구: 사용자 선택, 표시용 번역, 스레드 상태 읽기, 추천 카드, 그래프 실행 스트리밍, 명령 생성 과정.
+"""Shared UI helpers: user selection, display translation, thread state reads, recommendation cards, graph run
+streaming, command generation steps.
 
-화면 상태는 브라우저 세션이 아니라 TiDB 체크포인트에서 다시 읽는다.
-새로고침·재접속·다른 기기에서도 대기 중인 추천과 주문이 그대로 보인다.
+Page state is re-read from TiDB checkpoints, not from the browser session.
+Pending recommendations and orders stay visible after a refresh, a reconnect, or on another device.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ STEP_NODES = ("recall_memory", "build_intent", "search_candidates", "recommend",
 MEMORY_ICONS = {"pinned": "📌", "insight": "💡", "session": "💬"}
 
 
-# ---- 사용자 ----
+# ---- User ----
 
 @st.cache_data(show_spinner=False, ttl=300)
 def users() -> list[dict]:
@@ -43,7 +44,7 @@ def current_user_id() -> int:
 
 
 def current_workspace() -> str:
-    """로그인한 Google 계정의 작업 공간 (core/workspace.py)."""
+    """Workspace of the logged-in Google account (core/workspace.py)."""
     return workspace_id(identity()["email"] or "anonymous")
 
 
@@ -52,32 +53,32 @@ def current_user() -> dict:
     return next((u for u in users() if u["id"] == uid), {"id": uid, "name": f"User {uid}", "name_en": f"User {uid}"})
 
 
-# ---- 표시용 번역 ----
+# ---- Display translation ----
 
 @st.cache_data(show_spinner=False, max_entries=2000)
 def _translate(texts: tuple[str, ...], target: str) -> list[str]:
-    """TiDB 번역 캐시(core/translations.py) 위에 세션 간 메모리 캐시를 한 겹 더 둔다."""
+    """Adds a cross-session in-memory cache layer on top of the TiDB translation cache (core/translations.py)."""
     return translations.cached_translate(list(texts), target)
 
 
 def localized(texts: list[str]) -> list[str]:
-    """저장된 내용·다른 언어로 만든 결과를 현재 언어로 보여준다 (원본은 바꾸지 않는다)."""
+    """Shows stored content and other-language results in the current language (the original is unchanged)."""
     if not texts:
         return texts
     try:
-        with st.spinner(t("common.translating")):   # 캐시에 있으면 0.5초 안에 끝나 표시되지 않는다
+        with st.spinner(t("common.translating")):   # a cache hit finishes within 0.5s, so this is not shown
             return _translate(tuple(texts), lang())
     except Exception:
-        return texts      # 번역 실패 시 원문 그대로 보여준다
+        return texts      # on translation failure, show the original text
 
 
 def prepare_translations(texts: list[str]) -> None:
-    """두 언어의 번역을 미리 만들어 캐시에 넣는다 (화면을 처음 열 때 기다리지 않도록)."""
+    """Pre-builds translations for both languages into the cache (so the first page open does not wait)."""
     for target in LANGS:
         try:
             _translate(tuple(texts), target)
         except Exception:
-            pass          # 미리 만들지 못해도 화면에서 다시 시도한다
+            pass          # if pre-building fails, the page retries
 
 
 def localized_one(text: str | None) -> str:
@@ -88,13 +89,13 @@ MEMORY_SOURCES = ("onboarding", "learned", "history")
 
 
 def memory_source(m: dict) -> str:
-    """기억이 생긴 곳: 가입 시 선호 / 대화에서 배운 기억 / 결정·실행 기록 (화면 구분용)."""
+    """Memory origin: sign-up preference / learned from conversation / decision or execution record (for UI)."""
     tags = set(m.get("tags") or [])
     if m.get("memory_type") == "insight" or "insight-fallback" in tags:
         return "learned"
     if "preference" in tags:
         return "onboarding"
-    return "history"          # decision, execution, 그 밖의 pinned
+    return "history"          # decision, execution, other pinned
 
 
 def memory_lines(memories: list[dict]) -> list[str]:
@@ -103,21 +104,21 @@ def memory_lines(memories: list[dict]) -> list[str]:
 
 
 def localize_cards(cards: list[dict]) -> list[dict]:
-    """카드의 제목·근거·기회 이름을 현재 언어로 (한 번의 번역 호출로 묶는다)."""
+    """Card titles, rationale, and opportunity names in the current language (batched into one translation call)."""
     texts = [x for c in cards for x in (c["headline"], c["rationale"], c["title"])]
     out = localized(texts)
     return [{**c, "headline": out[i * 3], "rationale": out[i * 3 + 1], "title": out[i * 3 + 2]}
             for i, c in enumerate(cards)]
 
 
-# ---- 스레드 상태 ----
+# ---- Thread state ----
 
 def thread_snapshot(thread_id: str):
     return workflow.get_recommend_graph().get_state(workflow.thread_config(thread_id))
 
 
 def pending(snapshot) -> dict | None:
-    """스레드가 사람을 기다리고 있으면 interrupt 값({"type": ...})을 돌려준다."""
+    """Returns the interrupt value ({"type": ...}) if the thread is waiting for a human."""
     return snapshot.interrupts[0].value if snapshot and snapshot.interrupts else None
 
 
@@ -130,7 +131,7 @@ def latest_thread(user_id: int) -> str | None:
 
 
 def waiting_threads(user_id: int, kind: str) -> list[tuple[str, Any, dict]]:
-    """kind 타입(choose_card / order_approval)으로 멈춰 있는 스레드 목록 (최근 것부터)."""
+    """Threads paused on an interrupt of type kind (choose_card / order_approval), most recent first."""
     rows = get_db().query(
         """
         SELECT thread_id, MAX(created_at) AS created_at FROM recommendations
@@ -146,7 +147,7 @@ def waiting_threads(user_id: int, kind: str) -> list[tuple[str, Any, dict]]:
     return found
 
 
-# ---- 추천 카드 ----
+# ---- Recommendation cards ----
 
 def card_meta(card: dict) -> str:
     apy = t("card.apy", apy=f"{card['expected_apy']:g}") if card.get("expected_apy") is not None else t("card.apy_none")
@@ -155,7 +156,7 @@ def card_meta(card: dict) -> str:
 
 
 def render_card(card: dict, *, button_key: str | None = None) -> bool:
-    """추천 카드를 그리고, 버튼을 누르면 True. card는 localize_cards()를 거친 값."""
+    """Draws a recommendation card; True when its button is clicked. card has gone through localize_cards()."""
     with st.container(border=True):
         st.markdown(f"**#{card['rank']} {card['headline']}**")
         st.caption(card_meta(card))
@@ -171,7 +172,7 @@ def render_card(card: dict, *, button_key: str | None = None) -> bool:
     return False
 
 
-# ---- 그래프 실행 (스트리밍) ----
+# ---- Graph run (streaming) ----
 
 def _blocks(chunk) -> list[dict]:
     content = chunk.content
@@ -179,16 +180,17 @@ def _blocks(chunk) -> list[dict]:
 
 
 def _tool_updates(update) -> list[dict]:
-    """ToolNode의 updates 값(dict 또는 Command 결과 목록)을 dict 목록으로."""
+    """Turns a ToolNode updates value (a dict or a list of Command results) into a list of dicts."""
     items = update if isinstance(update, list) else [update]
     return [u if isinstance(u, dict) else getattr(u, "update", None) or {} for u in items]
 
 
 def stream_graph(graph_input, thread_id: str, status, *, phase: str, show_cards: bool = False) -> None:
-    """추천 그래프를 실행하며 진행 단계, AI 검토 메모, 만들어지는 카드를 status 안에 보여준다.
+    """Runs the recommendation graph, showing progress, AI review notes, and cards as they are built in a status.
 
-    승인·거절 뒤에는 엔진 결과를 tool이 끝나는 즉시 보여주고, agent의 결과 요약은 그 아래에 스트리밍한다.
-    노드별 걸린 시간은 graph_runs에 남아 Behind the scenes의 LangGraph 탭에 보인다.
+    After approve/reject, shows the engine result as soon as the tool finishes and streams the agent's
+    summary below it.
+    Per-node timing is stored in graph_runs and shown in the LangGraph tab of Behind the scenes.
     """
     graph = workflow.get_recommend_graph()
     memo_box = status.empty()
@@ -270,7 +272,7 @@ def decide_order(thread_id: str, decision: dict) -> None:
         status.update(label=t("status.done"), state="complete", expanded=False)
 
 
-# ---- 승인·거절 뒤 mem9 기억 정리 (백그라운드 작업) ----
+# ---- mem9 memory update after approve/reject (background job) ----
 
 STEP_ICONS = {"done": "✓", "running": "⏳", "warn": "⚠"}
 
@@ -307,8 +309,8 @@ def _memory_job_body(job_id: str, snap: dict) -> None:
         label = t("job.title_done", n=learned, s=f"{snap['elapsed']:.1f}")
     else:
         label = t("job.title_recorded", s=f"{snap['elapsed']:.1f}")
-    # 라벨이 매초 바뀌어도 펼침 상태가 유지되도록 key로 고정한다.
-    # on_change를 함께 주면 라벨이 바뀔 때 접혀 버리므로 주지 않는다 (2026-10-30 확인)
+    # Pin with a key so the expanded state survives the label changing every second.
+    # Passing on_change too makes it collapse when the label changes, so it is omitted (verified 2026-10-30)
     with st.expander(label, icon=":material/psychology:", key=f"memjob_{job_id}"):
         st.caption(t("job.intro"))
         st.markdown("  \n".join(_step_line(s) for s in snap["steps"]))
@@ -323,14 +325,14 @@ def _memory_job_live(job_id: str) -> None:
     job = memory_jobs.get(job_id)
     snap = job.snapshot() if job else None
     if snap is None or not snap["running"]:
-        st.rerun()                         # 끝나면 전체를 다시 그려 1초 갱신을 멈춘다
+        st.rerun()                         # when done, redraw everything to stop the 1-second refresh
     _memory_job_body(job_id, snap)
 
 
 def memory_job_panel(job_id: str | None) -> None:
-    """승인·거절 뒤 mem9가 뒤에서 하는 일. 기본은 접혀 있고, 진행 중일 때만 1초마다 갱신한다."""
+    """What mem9 does behind the scenes after approve/reject. Collapsed by default; refreshes each second while running."""
     job = memory_jobs.get(job_id)
-    if job is None:                        # 앱 재시작 등으로 작업 정보가 없으면 표시하지 않는다
+    if job is None:                        # show nothing if job info is gone (e.g. after an app restart)
         return
     snap = job.snapshot()
     if snap["running"]:
@@ -341,7 +343,7 @@ def memory_job_panel(job_id: str | None) -> None:
 
 @st.fragment(run_every=1)
 def memory_updating_note(app_id: str) -> None:
-    """대시보드: 이 기억 공간의 정리가 진행 중이면 '정리 중…'을 띄우고, 끝나면 화면을 다시 그린다."""
+    """Dashboard: shows '정리 중…' ("Updating…") while this memory space is being updated, and redraws when done."""
     if memory_jobs.pending(app_id):
         st.caption(t("mem.updating"))
     else:
@@ -349,7 +351,7 @@ def memory_updating_note(app_id: str) -> None:
 
 
 
-# ---- 승인 화면: 투자 정보가 엔진 명령이 되기까지 (Structured Output) ----
+# ---- Approval page: how investment info becomes an engine command (Structured Output) ----
 
 ORIGINS = {"llm": ("violet", ":material/auto_awesome:"), "app": ("blue", ":material/verified:"),
            "engine": ("green", ":material/settings_suggest:")}
@@ -364,9 +366,11 @@ def _flow_step(n: int, key: str, origin: str, caption: str) -> None:
 
 
 def command_flow_panel(values: dict, approval: dict) -> None:
-    """원문 → Opportunity → CommandDraft → 앱 검증 → tool 호출 → ExecutionCommand → 엔진 시뮬레이션을 JSON으로 보여준다.
+    """Shows source text → Opportunity → CommandDraft → app check → tool call → ExecutionCommand → engine simulation
+    as JSON.
 
-    LLM이 만든 값은 그대로, 앱이 채운 값은 채운 그대로 보여 '어디까지가 AI이고 어디부터가 앱인지'를 드러낸다.
+    Values from the LLM and values filled in by the app are shown as-is, revealing 'where the AI ends and the app
+    begins'.
     """
     card = values["selected"]
     rows = get_db().query(

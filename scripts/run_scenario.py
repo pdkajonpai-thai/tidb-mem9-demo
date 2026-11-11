@@ -1,24 +1,24 @@
-"""하이라이트 장면(ARCHITECTURE.md 4.4)을 UI 없이 처음부터 끝까지 실행해 확인한다.
+"""Runs the highlight scene (ARCHITECTURE.md 4.4) end to end without the UI and checks it.
 
-    python scripts/run_scenario.py                  # 초기화 → 분석 → 1회차 → 거절 → 2회차 → 승인·실행
+    python scripts/run_scenario.py                  # reset → analysis → round 1 → reject → round 2 → approve/execute
 
-시나리오 전용 작업 공간(scenario@localhost)에서 실행하므로 다른 방문자의 데이터에는 영향이 없다.
-    python scripts/run_scenario.py --skip-reset     # 현재 데이터·기억 그대로 1회차부터
+Runs in a scenario-only workspace (scenario@localhost), so other visitors' data is not affected.
+    python scripts/run_scenario.py --skip-reset     # start from round 1 with current data and memory as-is
     python scripts/run_scenario.py --user 2
-    python scripts/run_scenario.py --lang en       # 영어로 생성 (거절 사유도 영어)
-    python scripts/run_scenario.py --timing        # 단계마다 노드별 걸린 시간도 출력
+    python scripts/run_scenario.py --lang en       # generate in English (rejection reason in English too)
+    python scripts/run_scenario.py --timing        # also print per-node timing for each step
 
-흐름: 추천 → 추천 선택(interrupt) → 실행 agent가 execute_order tool 호출
-      → tool 안에서 주문 승인 대기(interrupt) → 거절 또는 승인
+Flow: recommend → choose recommendation (interrupt) → execution agent calls the execute_order tool
+      → order approval wait inside the tool (interrupt) → reject or approve
 
-합격 기준
-  1) 1회차 추천에 LP가 있다
-  2) 실행 agent가 execute_order tool을 호출해 승인 대기에 들어간다
-  3) 거절 사유가 mem9 기억(insight 또는 대체 경로)으로 남는다
-  4) 2회차 추천에 거절한 기회와 변동성 LP(리스크 3 이상)가 없다 (스테이블 LP는 허용)
-  5) 2회차 근거에 기억이 인용된다 (memory_refs가 비어 있지 않다)
-  6) 승인 후 주문이 CONFIRMED가 된다
-  7) 승인 화면에 보인 명령과 실행·기록된 명령이 같다 (tool 재실행에도 바뀌지 않음)
+Pass criteria
+  1) Round 1 recommendations include an LP
+  2) The execution agent calls the execute_order tool and enters approval wait
+  3) The rejection reason is kept as a mem9 memory (insight or fallback path)
+  4) Round 2 recommendations exclude the rejected opportunity and volatile LPs (risk >= 3) (stable LPs allowed)
+  5) Round 2 rationale cites memory (memory_refs is not empty)
+  6) After approval the order becomes CONFIRMED
+  7) The command shown on the approval page matches the executed and recorded command (unchanged on tool re-run)
 """
 from __future__ import annotations
 
@@ -51,16 +51,16 @@ REJECT_REASON = {
 
 
 TIMING = False
-TIMINGS: list[tuple[str, dict]] = []     # (단계 이름, 실행 기록): 마지막에 표로 출력
+TIMINGS: list[tuple[str, dict]] = []     # (step name, run record): printed as a table at the end
 
 
 def pending(state: dict) -> dict | None:
-    """그래프가 멈춰 있으면 interrupt 값을 돌려준다."""
+    """Returns the interrupt value if the graph is paused."""
     return state["__interrupt__"][0].value if state.get("__interrupt__") else None
 
 
 def run(graph_input, thread_id: str, phase: str, label: str) -> dict:
-    """화면과 같은 방식(stream)으로 실행하고 노드별 시간을 잰다. invoke처럼 최종 상태를 돌려준다."""
+    """Runs the same way as the UI (stream) and times each node. Returns the final state like invoke."""
     graph = workflow.get_recommend_graph()
     config = workflow.thread_config(thread_id)
     for _ in graph_runs.stream_timed(graph, graph_input, config, phase=phase):
@@ -96,7 +96,7 @@ def recommend(user_id: int, lang: str, label: str) -> tuple[str, dict]:
 
 
 def request_execution(thread_id: str, card: dict, label: str) -> dict | None:
-    """추천을 고르면 실행 agent가 tool을 호출하고, tool 안의 승인 대기에서 멈춘다."""
+    """On choosing a recommendation, the execution agent calls the tool and pauses at the approval wait inside it."""
     start = time.perf_counter()
     state = run(Command(resume={"recommendation_id": card["recommendation_id"]}), thread_id, "execute", label)
     print(f"  ({time.perf_counter() - start:.1f}초)")
@@ -122,7 +122,7 @@ def decide(thread_id: str, decision: dict, label: str) -> dict:
     print(f"  결정 처리 {time.perf_counter() - start:.1f}초 (화면이 기다리는 시간)")
     print(f"  agent: {state['messages'][-1].content}")
     job = memory_jobs.get(state.get("memory_job"))
-    job.wait(60)                      # 기억 정리는 백그라운드: 판정을 위해 여기서만 기다린다
+    job.wait(60)                      # memory update runs in the background: wait here only to judge the result
     snap = job.snapshot()
     print(f"  mem9 기억 정리 {snap['elapsed']:.1f}초 (백그라운드)" + (f" ✗ {snap['error']}" if snap["error"] else ""))
     for e in snap["events"]:
@@ -142,7 +142,7 @@ def main() -> int:
     checks: dict[str, bool] = {}
 
     ensure_workspace(WORKSPACE)
-    current_workspace.set(WORKSPACE)     # 호출·시간 기록을 시나리오 작업 공간에 남긴다
+    current_workspace.set(WORKSPACE)     # record calls and timing in the scenario workspace
     if not args.skip_reset:
         print("[0] 데모 초기화")
         t = time.perf_counter()

@@ -1,10 +1,10 @@
-"""TiDB 연결 (PyMySQL, TLS), SQL 로그 기록.
+"""TiDB connection (PyMySQL, TLS), with SQL logging.
 
-TiDB Cloud Starter는 TLS가 필수이며, CA는 certifi 번들을 사용한다.
-새 TLS 연결은 약 1.3초가 걸리므로(Tokyo 리전 측정) 앱 전체에서 연결 하나를
-Lock으로 보호해 재사용한다. 연결 오류가 나면 새로 연결해 한 번 재시도한다.
+TiDB Cloud Starter requires TLS; the CA comes from the certifi bundle.
+A new TLS connection takes about 1.3 seconds (measured in the Tokyo region), so the whole app reuses
+one connection guarded by a Lock. On a connection error it reconnects and retries once.
 
-ORM은 쓰지 않는다. 직접 쓴 SQL을 SQL Inspector에 그대로 보여주는 것이 데모의 목적이다.
+No ORM is used. Showing the hand-written SQL as is in the SQL Inspector is the point of the demo.
 """
 from __future__ import annotations
 
@@ -47,10 +47,10 @@ class Database:
         self._connect = connect_fn or (lambda: connect(autocommit=True))
         self._conn: pymysql.connections.Connection | None = None
         self._lock = threading.RLock()
-        self.log = CallLog(maxlen=200)   # SQL Inspector용 (작업 공간별)
+        self.log = CallLog(maxlen=200)   # for the SQL Inspector (per workspace)
 
     def run(self, fn: Callable[[Any], T], *, transaction: bool = False) -> T:
-        """커서를 받아 작업하는 함수를 실행한다. 로그는 남기지 않는다 (체크포인터 내부 SQL 등)."""
+        """Runs a function that works on a cursor. Nothing is logged (e.g. the checkpointer's internal SQL)."""
         with self._lock:
             for attempt in (1, 2):
                 if self._conn is None:
@@ -64,7 +64,7 @@ class Database:
                         self._conn.commit()
                     return result
                 except CONNECTION_ERRORS:
-                    # 유휴 타임아웃 등으로 끊긴 연결: 버리고 한 번만 새로 연결해 재시도
+                    # Connection dropped (idle timeout etc.): discard it, reconnect, and retry once only
                     self._drop_conn()
                     if attempt == 2:
                         raise
@@ -89,7 +89,7 @@ class Database:
     def _logged(
         self, label: str | None, sql: str, params: Any, fn: Callable[[Any], tuple[T, int]]
     ) -> T:
-        """fn은 (결과, 영향받은/반환된 행 수)를 돌려준다."""
+        """fn returns (result, number of affected/returned rows)."""
         start = time.perf_counter()
         entry: dict[str, Any] = {
             "at": datetime.now().strftime("%H:%M:%S"),
@@ -117,7 +117,7 @@ class Database:
         return self._logged(label, sql, params, fn)
 
     def execute(self, sql: str, params: Any = None, *, label: str | None = None) -> int:
-        """실행 후 lastrowid를 돌려준다 (AUTO_RANDOM 키 INSERT 후 ID 확인용)."""
+        """Returns lastrowid after execution (to get the ID after an INSERT with an AUTO_RANDOM key)."""
         def fn(cur):
             affected = cur.execute(sql, params)
             return cur.lastrowid, affected
@@ -134,5 +134,5 @@ class Database:
 
 @lru_cache
 def get_db() -> Database:
-    """프로세스 전체에서 공유하는 Database (화면, 그래프 노드, 기록). 체크포인터는 연결을 따로 쓴다."""
+    """Database shared by the whole process (screens, graph nodes, records). The checkpointer has its own connection."""
     return Database()

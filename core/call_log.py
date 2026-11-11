@@ -1,9 +1,9 @@
-"""Behind the scenes 화면용 호출 기록 (SQL, mem9). 작업 공간마다 따로 쌓는다.
+"""Call records (SQL, mem9) for the Behind the scenes screen, kept separately per workspace.
 
-DB 연결과 mem9 클라이언트는 서버 전체가 하나를 같이 쓰므로, 호출을 일으킨 작업 공간을
-ContextVar로 알아낸다. app.py가 매 실행 시작에 현재 작업 공간을 넣고, LangGraph는 노드를
-다른 스레드에서 돌릴 때도 이 값을 복사해 넘긴다. 작업 공간이 없는 호출(스크립트, 전체 초기화)은
-누구의 화면에도 보이지 않는다.
+The DB connection and the mem9 client are shared by the whole server, so the workspace that made a call
+is found through a ContextVar. app.py sets the current workspace at the start of every run, and LangGraph
+copies this value over when it runs nodes on other threads. Calls without a workspace (scripts, full reset)
+do not appear on anyone's screen.
 """
 from __future__ import annotations
 
@@ -27,6 +27,6 @@ class CallLog:
             self._entries.setdefault(workspace, deque(maxlen=self._maxlen)).append(entry)
 
     def recent(self, workspace: str) -> list[dict[str, Any]]:
-        """이 작업 공간의 기록 (최신순)."""
+        """Records for this workspace (newest first)."""
         with self._lock:
             return list(reversed(self._entries.get(workspace, ())))

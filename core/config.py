@@ -1,9 +1,10 @@
-"""환경변수 설정.
+"""Environment variable settings.
 
-로컬에서는 프로젝트 루트의 .env를 읽고, Streamlit Community Cloud에서는 Secrets의 최상위 키를
-환경변수로 옮겨 같은 코드로 동작한다. Streamlit은 st.secrets에 처음 접근할 때에야 최상위 키를
-환경변수로 노출하므로, 그 순서에 기대지 않고 여기서 직접 옮긴다 ([auth] 같은 섹션은 옮기지 않는다).
-ANTHROPIC_API_KEY, LANGSMITH_* 는 LangChain이 환경변수에서 직접 읽는다.
+Locally it reads .env in the project root; on Streamlit Community Cloud it copies the top-level Secrets keys
+into environment variables, so the same code works in both. Streamlit only exposes top-level keys as
+environment variables on the first access to st.secrets, so rather than rely on that order we copy them here
+(sections such as [auth] are not copied).
+ANTHROPIC_API_KEY and LANGSMITH_* are read by LangChain directly from the environment.
 """
 from __future__ import annotations
 
@@ -19,12 +20,12 @@ load_dotenv(ROOT / ".env")
 
 
 def _load_streamlit_secrets() -> None:
-    """Streamlit Secrets의 최상위 값을 환경변수로 옮긴다. 이미 있는 환경변수(.env 등)는 덮어쓰지 않는다."""
+    """Copies top-level Streamlit Secrets values into env vars. Existing env vars (.env etc.) are not overwritten."""
     try:
         import streamlit as st
 
         items = st.secrets.to_dict().items()
-    except Exception:          # Secrets 파일이 없는 로컬·스크립트 실행
+    except Exception:          # local or script run without a Secrets file
         return
     for key, value in items:
         if not isinstance(value, dict):
@@ -55,7 +56,7 @@ class Settings:
 
 
 def missing(*names: str) -> list[str]:
-    """값이 비어 있는 환경변수 이름 목록. 인자가 없으면 REQUIRED 전체를 확인한다."""
+    """Names of environment variables whose value is empty. With no arguments, checks all of REQUIRED."""
     return [n for n in (names or REQUIRED) if not os.environ.get(n)]
 
 

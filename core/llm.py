@@ -1,7 +1,7 @@
-"""Claude 호출 (LangChain ChatAnthropic), Structured Output, 모델 설정.
+"""Claude calls (LangChain ChatAnthropic), Structured Output, and model settings.
 
-모든 모델 호출은 이 파일을 거친다. ChatAnthropic이 지원하지 않는 기능이
-스모크 테스트에서 확인되면, 해당 호출만 이 파일 안에서 anthropic SDK로 바꾼다.
+Every model call goes through this file. If the smoke test finds a feature ChatAnthropic does not support,
+only that call is switched to the anthropic SDK inside this file.
 """
 from __future__ import annotations
 
@@ -48,10 +48,11 @@ def structured(schema, *, include_raw: bool = False, **overrides):
 
 
 def translate(texts: list[str], target: str) -> list[str]:
-    """화면 표시용: 대상 언어가 아닌 문장만 옮긴다 (ko: 한글이 없는 문장, en: 한글·한자가 있는 문장).
+    """For display: translates only sentences not already in the target language (ko: sentences without Hangul,
+    en: sentences with Hangul or Hanja).
 
-    저장된 원본(mem9 기억, 분석 결과 등)은 바꾸지 않는다.
-    단순 번역이라 thinking을 끈다 (Haiku 5.5는 effort high 이하에서 허용).
+    Stored originals (mem9 memories, analysis results, etc.) are not changed.
+    Thinking is turned off since this is plain translation (Haiku 5.5 allows this at effort high or below).
     """
     need = list(dict.fromkeys(t for t in texts if needs_translation(t, target)))
     if not need:
@@ -63,7 +64,7 @@ def translate(texts: list[str], target: str) -> list[str]:
 
 
 def output_language_rule(lang: str) -> str:
-    """생성 프롬프트 끝에 붙이는 출력 언어 지시."""
+    """Output language instruction appended to generation prompts."""
     if lang == "en":
         return ("\n\n출력 언어: 영어. 사용자에게 보이는 모든 문장(제목, 근거, 요약, 검색 문장 등)을 자연스러운 영어로 씁니다. "
                 "프로토콜·거래소·자산 이름은 그대로 둡니다.")

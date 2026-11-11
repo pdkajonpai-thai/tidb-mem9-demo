@@ -1,11 +1,13 @@
-"""Behind the scenes의 설명 자료: LangGraph 노드 설명표, 기술 설명 탭(mem9 기억 압축과 손실, LangGraph 구성).
+"""Explanatory content for Behind the scenes: LangGraph node table, technical notes tab (mem9 memory compression
+and loss, LangGraph setup).
 
-문장은 (한국어, English) 쌍으로 둔다. Mermaid 정의는 코드가 만든 고정 그림만 넣는다.
-mem9 동작은 mem9 GitHub 설계 문서(docs/architecture/mem9-algorithms)와 이 데모의 Hosted API 관찰 결과를 따른다.
+Sentences are kept as (Korean, English) pairs. Mermaid definitions contain only fixed diagrams built by code.
+mem9 behavior follows the mem9 GitHub design docs (docs/architecture/mem9-algorithms) and this demo's observations
+of the Hosted API.
 """
 from __future__ import annotations
 
-# 추천·승인 그래프 노드: (종류, 하는 일, 읽는 state, 쓰는 state, 다음)
+# Recommendation/approval graph nodes: (kind, what it does, state read, state written, next)
 GRAPH_NODES: dict[str, dict[str, tuple[str, str]]] = {
     "recall_memory": {
         "kind": ("TiDB SQL + mem9", "TiDB SQL + mem9"),

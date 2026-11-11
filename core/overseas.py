@@ -1,8 +1,9 @@
-"""해외 거래소 월말 잔고 정보 (해외 계좌 신고 참고 장면).
+"""Month-end balance info for overseas exchanges (the overseas account reporting reference scene).
 
-해외 거래소 월말 잔고 합계를 SQL로 집계해, 해외 계좌 신고 기준(월말 합계 5억 원)과의 거리를 보여준다.
-계산은 모두 SQL로 하고 LLM은 관여하지 않는다. 화면 문구(ui.i18n "overseas.notice")는 사실 정보로만 두며,
-신고 대상 여부 판단은 세무 전문가에게 맡긴다.
+Aggregates month-end overseas exchange balances with SQL and shows the distance to the overseas account
+reporting threshold (month-end total of KRW 500 million). All calculation is done in SQL with no LLM involved.
+The screen text (ui.i18n "overseas.notice") stays factual only; whether reporting is required is left to a tax
+professional.
 """
 from __future__ import annotations
 
@@ -14,14 +15,15 @@ THRESHOLD_KRW = 500_000_000
 
 
 def overseas_locations(db: Database) -> set[str]:
-    """해외 거래소 계정 위치 이름 (예: binance, bybit). 주문 단계의 chain과 비교한다."""
+    """Location names of overseas exchange accounts (e.g. binance, bybit). Compared with an order step's chain."""
     rows = db.query("SELECT LOWER(name) AS loc FROM exchanges WHERE region = 'GLOBAL'",
                     label="해외 잔고: 해외 거래소 목록")
     return {r["loc"] for r in rows}
 
 
 def overseas_status(db: Database, user_id: int) -> dict[str, Any] | None:
-    """최근 연도의 월별 해외 거래소 잔고 합계, 최고값, 기준까지 남은 금액. 해외 잔고가 없으면 None."""
+    """Monthly overseas exchange balance totals for the latest year, the peak, and the amount left to the threshold.
+    None if there are no overseas balances."""
     months = db.query(
         """
         SELECT s.month_end, SUM(s.krw_value) AS total_krw

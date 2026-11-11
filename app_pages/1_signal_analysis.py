@@ -1,4 +1,5 @@
-"""① Signal 분석: 원문 목록 → AI 분석(analysis_graph, 원문마다 병렬) → 구조화된 투자 기회."""
+"""① Signal analysis: source texts → AI analysis (analysis_graph, parallel per source) → structured
+opportunities."""
 import time
 
 import streamlit as st
@@ -62,7 +63,7 @@ opportunities = db.query(
     ORDER BY o.risk_level, o.expected_apy DESC
     """, (workspace,), label="화면: 투자 기회 목록")
 
-# 원문(입력) → 투자 기회(결과) 순서. 분석 전에는 원문, 분석 후에는 결과 탭을 먼저 보여준다
+# Order: source text (input) → opportunities (result). Source tab first before analysis, result tab after
 raw_label, opp_label = t("p1.tab_raw", n=len(signals)), t("p1.tab_opps", n=len(opportunities))
 tab_raw, tab_opp = st.tabs([raw_label, opp_label], default=opp_label if opportunities else raw_label)
 with tab_raw:

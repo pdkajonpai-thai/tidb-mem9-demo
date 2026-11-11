@@ -1,13 +1,14 @@
-"""실행 엔진 시뮬레이션 (연동할 기존 자동화 엔진 자리).
+"""Execution engine simulation (a stand-in for the existing automation engine to be integrated).
 
-연동할 엔진이 거래소 API 기반이든 온체인 기반이든 맞도록, 두 경로를 같은 API로 받는다.
-주문 단계의 chain이 거래소 계정(binance 등)이면 거래소 API 경로, 네트워크(arbitrum 등)면 온체인 경로다.
+Both paths are accepted through the same API, so it fits whether the engine is exchange-API based or on-chain.
+If an order step's chain is an exchange account (binance etc.) it takes the exchange API path; if it is a
+network (arbitrum etc.) it takes the on-chain path.
 
-엔진 API는 두 가지다.
-- simulate(): 주문을 실제로 보내지 않고 예상 체결량·수수료·연 예상 수익을 계산한다.
-- submit(): 주문을 PENDING → SUBMITTED → CONFIRMED로 진행하고 가짜 체결 ID(tx_hash)를 기록한다.
-실행 agent의 execute_order tool이 이 API를 호출한다. 실제 연동 시 이 모듈만 바꾼다.
-호출은 REST 요청처럼 calls에 남겨 Behind the scenes의 Engine calls 탭에서 요청·응답 JSON을 보여준다.
+The engine API has two calls.
+- simulate(): computes expected fill amount, fees, and expected annual yield without actually sending the order.
+- submit(): advances the order PENDING → SUBMITTED → CONFIRMED and records a fake fill ID (tx_hash).
+The execution agent's execute_order tool calls this API. For a real integration, only this module changes.
+Calls are kept in calls like REST requests, so the Engine calls tab of Behind the scenes shows request/response JSON.
 """
 from __future__ import annotations
 
@@ -22,13 +23,13 @@ from core.call_log import CallLog, current_workspace
 from core.db import Database
 
 HOLDINGS = Path(__file__).resolve().parent.parent / "data" / "holdings.json"
-GAS_USD = {"ethereum": 4.5, "arbitrum": 0.15, "base": 0.05, "solana": 0.01, "bitcoin": 2.0, "kaia": 0.01}  # 합성 값
+GAS_USD = {"ethereum": 4.5, "arbitrum": 0.15, "base": 0.05, "solana": 0.01, "bitcoin": 2.0, "kaia": 0.01}  # synthetic values
 CEX_ACCOUNTS = {"upbit", "binance", "bybit", "okx", "coinbase", "bithumb", "coinone", "korbit"}
 EXCHANGE_API, ONCHAIN = "exchange_api", "onchain"
 SIMULATE = "/v1/orders/simulate"
 ORDERS = "/v1/orders"
 
-calls = CallLog(maxlen=200)     # Behind the scenes 화면용 엔진 호출 기록 (작업 공간별)
+calls = CallLog(maxlen=200)     # engine call records for the Behind the scenes screen (per workspace)
 
 
 def _log(path: str, body: dict, response: dict, start: float) -> None:
@@ -37,7 +38,8 @@ def _log(path: str, body: dict, response: dict, start: float) -> None:
 
 
 def route(chain: str) -> str:
-    """실행 경로 코드 (엔진 API 응답에 그대로 나가므로 언어와 무관한 값). 화면 표시는 t("route." + 코드)."""
+    """Execution route code (language-independent: it goes out as is in the engine API response).
+    Displayed via t("route." + code)."""
     return EXCHANGE_API if chain.lower() in CEX_ACCOUNTS else ONCHAIN
 
 
@@ -56,9 +58,9 @@ def simulate(steps: list[dict[str, Any]], expected_apy: float | None = None, *,
         usd = s["amount"] * from_price if from_price else None
         received = None
         if s["action"] == "swap" and s.get("to_asset") and usd is not None and p.get(s["to_asset"].upper()):
-            # 최악의 경우(슬리피지 한도 전부 소진)를 기준으로 계산
+            # computed for the worst case (the full slippage limit used up)
             received = usd / p[s["to_asset"].upper()] * (1 - s["slippage_bps"] / 10_000)
-        # 거래소 계정 안 예치·스테이킹은 네트워크 수수료가 없다 (거래 수수료는 데모에서 생략)
+        # deposits/staking inside an exchange account have no network fee (trading fees are omitted in the demo)
         gas = 0.0 if route(s["chain"]) == EXCHANGE_API else GAS_USD.get(s["chain"].lower(), 1.0)
         gas_total += gas
         rows.append({
@@ -67,7 +69,7 @@ def simulate(steps: list[dict[str, Any]], expected_apy: float | None = None, *,
             "min_received": round(received, 6) if received is not None else None, "gas_usd": gas,
             "route": route(s["chain"]),
         })
-    # 포지션 = 첫 단계 입력 자산으로 들어가는 금액 합계 (LP는 스왑분 + 예치분)
+    # position = total amount going in as the first step's input asset (for LP: swap part + deposit part)
     first = steps[0] if steps else None
     input_rows = [r for r, s in zip(rows, steps)
                   if first and s["from_asset"].upper() == first["from_asset"].upper() and r["usd"] is not None]
@@ -80,7 +82,7 @@ def simulate(steps: list[dict[str, Any]], expected_apy: float | None = None, *,
         "expected_yearly_usd": round(position_usd * expected_apy / 100, 2)
         if position_usd is not None and expected_apy else None,
     }
-    # 승인 후 재개하면 tool이 처음부터 다시 실행되므로, 같은 명령의 시뮬레이션은 한 번만 기록한다
+    # On resume after approval the tool reruns from the start, so a simulation of the same command is recorded once
     ws = current_workspace.get()
     if not command_id or not any(c["path"] == SIMULATE and c["body"].get("command_id") == command_id
                                  for c in calls.recent(ws)):
@@ -102,7 +104,7 @@ def submit(db: Database, recommendation_id: int, command: dict[str, Any], *, ste
     db.execute("UPDATE execution_orders SET status = 'CONFIRMED', tx_hash = %s WHERE id = %s",
                (tx_hash, order_id), label="실행: 체결 확인 (CONFIRMED)")
     order = {"order_id": order_id, "status": "CONFIRMED", "tx_hash": tx_hash}
-    # 19자리 주문 ID는 브라우저 JSON 표시에서 반올림되므로 기록에는 문자열로 남긴다
+    # 19-digit order IDs get rounded in the browser's JSON display, so they are recorded as strings
     _log(ORDERS, command, {**order, "order_id": str(order_id), "status_history": ["PENDING", "SUBMITTED", "CONFIRMED"]},
          start)
     return order

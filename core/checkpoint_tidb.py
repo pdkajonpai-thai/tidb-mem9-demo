@@ -1,12 +1,12 @@
-"""TiDB용 LangGraph 체크포인터.
+"""LangGraph checkpointer for TiDB.
 
-langgraph-checkpoint-mysql은 TiDB가 지원하지 않는 문법(JSON_TABLE, INSERT ... AS new,
-DEFAULT ('{}'))을 써서 사용할 수 없다. 이 구현은 InMemorySaver와 같은 저장 구조
-(체크포인트 / 채널 값 blob / 중간 쓰기)를 TiDB 테이블 3개에 그대로 옮기고,
-일반 SELECT와 INSERT ... ON DUPLICATE KEY UPDATE만 사용한다.
+langgraph-checkpoint-mysql cannot be used because it relies on syntax TiDB does not support (JSON_TABLE,
+INSERT ... AS new, DEFAULT ('{}')). This implementation maps the same storage layout as InMemorySaver
+(checkpoints / channel value blobs / pending writes) directly onto 3 TiDB tables,
+and uses only plain SELECT and INSERT ... ON DUPLICATE KEY UPDATE.
 
-연결 관리(Lock, 연결 오류 시 1회 재연결·재시도)는 core.db.Database에 맡긴다.
-모든 쓰기는 INSERT IGNORE / upsert라 재시도로 다시 실행돼도 안전하다.
+Connection management (Lock, one reconnect and retry on connection error) is left to core.db.Database.
+Every write is INSERT IGNORE / upsert, so it is safe to run again on retry.
 """
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ class TiDBSaver(BaseCheckpointSaver[str]):
 
         self._run(run)
 
-    # ---- 읽기 ----
+    # ---- Reads ----
 
     def _load_blobs(self, cur, thread_id: str, ns: str, versions: ChannelVersions) -> dict[str, Any]:
         if not versions:
@@ -217,7 +217,7 @@ class TiDBSaver(BaseCheckpointSaver[str]):
 
         yield from self._run(run)
 
-    # ---- 쓰기 ----
+    # ---- Writes ----
 
     def put(
         self,
@@ -239,8 +239,8 @@ class TiDBSaver(BaseCheckpointSaver[str]):
         cp_type, cp_blob = self.serde.dumps_typed(c)
         md_type, md_blob = self.serde.dumps_typed(full_metadata)
 
-        # 트랜잭션 없이 blob → 체크포인트 순서로 쓴다. 중간에 실패해도 남는 것은
-        # 참조되지 않는 blob뿐이고, blob이 빠진 체크포인트는 생기지 않는다.
+        # Write blobs then the checkpoint, without a transaction. A failure midway leaves only
+        # unreferenced blobs; a checkpoint with missing blobs never appears.
         def run(cur) -> None:
             if blobs:
                 cur.executemany(
@@ -278,7 +278,7 @@ class TiDBSaver(BaseCheckpointSaver[str]):
         thread_id = config["configurable"]["thread_id"]
         ns = config["configurable"].get("checkpoint_ns", "")
         checkpoint_id = config["configurable"]["checkpoint_id"]
-        # 일반 쓰기는 이미 있으면 유지하고(INSERT IGNORE), 특수 채널(음수 idx)은 덮어쓴다
+        # Regular writes keep an existing row (INSERT IGNORE); special channels (negative idx) overwrite
         keep, overwrite = [], []
         for idx, (channel, value) in enumerate(writes):
             idx = WRITES_IDX_MAP.get(channel, idx)
@@ -302,7 +302,7 @@ class TiDBSaver(BaseCheckpointSaver[str]):
         self._run(run, transaction=True)
 
     def get_next_version(self, current: str | None, channel: None) -> str:
-        # InMemorySaver와 같은 형식: 정렬 가능한 정수부 + 충돌 방지용 난수
+        # Same format as InMemorySaver: a sortable integer part + a random part to avoid collisions
         if current is None:
             current_v = 0
         elif isinstance(current, int):
@@ -311,7 +311,7 @@ class TiDBSaver(BaseCheckpointSaver[str]):
             current_v = int(current.split(".")[0])
         return f"{current_v + 1:032}.{random.random():016}"
 
-    # ---- 비동기: 동기 구현을 스레드에서 실행 ----
+    # ---- Async: run the sync implementation in a thread ----
 
     async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         return await asyncio.to_thread(self.get_tuple, config)

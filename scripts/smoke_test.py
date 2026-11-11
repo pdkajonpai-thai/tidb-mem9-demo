@@ -1,20 +1,20 @@
-"""1단계 스모크 테스트: 외부 서비스 연결과 설계상 미확인 항목을 확인한다.
+"""Stage 1 smoke test: checks external service connections and items left unverified in the design.
 
-    python scripts/smoke_test.py                 # 전체
+    python scripts/smoke_test.py                 # all
     python scripts/smoke_test.py --only tidb,mem9
 
-확인 항목
-  tidb        TiDB 연결(TLS)과 버전
-  embed       Auto Embedding (EMBED_TEXT 생성 컬럼 + 텍스트 유사도 검색)
-  mem9        mem9 키 상태, pinned 쓰기·목록, smart ingest insight 추출(실패해도 PASS, 결과만 표시)
-  checkpoint  TiDB 체크포인터(core/checkpoint_tidb.py): interrupt → 새 연결로 재개, 이력 조회, 삭제
-  llm_struct  ChatAnthropic 네이티브 structured output
-  llm_effort  ChatAnthropic effort 전달
+Checks
+  tidb        TiDB connection (TLS) and version
+  embed       Auto Embedding (EMBED_TEXT generated column + text similarity search)
+  mem9        mem9 key status, pinned write/list, smart ingest insight extraction (PASS even if it fails; result shown)
+  checkpoint  TiDB checkpointer (core/checkpoint_tidb.py): interrupt → resume on a new connection, history, delete
+  llm_struct  ChatAnthropic native structured output
+  llm_effort  ChatAnthropic effort passthrough
   llm_cache   ChatAnthropic prompt caching
-  llm_stream  ChatAnthropic 스트리밍
+  llm_stream  ChatAnthropic streaming
 
-테스트용 데이터(smoke_embed 테이블, appId=smoke_* 기억, smoke_* 스레드)는 끝나면 지운다.
-체크포인트 테이블(lg_*)은 앱에서도 쓰므로 남겨 둔다.
+Test data (smoke_embed table, appId=smoke_* memories, smoke_* threads) is deleted at the end.
+Checkpoint tables (lg_*) are kept because the app uses them too.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Annotated, TypedDict  # noqa: F401  (LangGraph가 상태 타입 힌트를 해석할 때 사용)
+from typing import Annotated, TypedDict  # noqa: F401  (used when LangGraph resolves state type hints)
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -123,8 +123,8 @@ def check_mem9() -> str:
         if pinned["id"] not in {m["id"] for m in listed}:
             raise CheckFailed(f"목록에 방금 쓴 기억이 없습니다: {listed}")
 
-        # 실제 앱의 거절 기록과 같은 형태(사용자 사유만)로 smart ingest → insight 추출 대기.
-        # 한국어 assistant 메시지를 함께 보내면 추출이 일어나지 않았다 (3회 중 3회).
+        # smart ingest shaped like the app's rejection record (user reason only) → wait for insight extraction.
+        # Sending a Korean assistant message along with it prevented extraction (3 out of 3 tries).
         client.ingest(app_id, [
             {"role": "user", "content": "거절할게요. 변동성이 큰 상품은 부담스러워요. 비영구적 손실도 걱정돼요."},
         ])
@@ -137,7 +137,7 @@ def check_mem9() -> str:
         finally:
             client.close()
 
-    # 추출 실패는 앱에 대체 경로(Claude 추출 → pinned)가 있으므로 FAIL로 보지 않는다
+    # extraction failure is not a FAIL because the app has a fallback path (Claude extraction → pinned)
     if insights:
         extracted = f"insight {len(insights)}개 추출 ({waited:.0f}초): " + " / ".join(
             m["content"] for m in insights)
@@ -190,7 +190,7 @@ def check_checkpoint() -> str:
     if first["__interrupt__"][0].value.get("cards") != first["cards"]:
         raise CheckFailed(f"interrupt 값이 상태와 다릅니다: {first['__interrupt__']}")
 
-    # 연결·체크포인터·그래프를 모두 새로 만들어 재개 → 프로세스 재시작과 같은 조건
+    # resume with a new connection, checkpointer, and graph → same conditions as a process restart
     graph, saver, database = build()
     try:
         resumed = graph.invoke(Command(resume="approve"), config)
@@ -231,7 +231,7 @@ def check_llm_effort() -> str:
 
     need("ANTHROPIC_API_KEY")
     llm = get_llm(effort="low")
-    payload = llm._get_request_payload([HumanMessage("ping")])  # 비공개 API: 실제 전송 내용 확인용
+    payload = llm._get_request_payload([HumanMessage("ping")])  # private API: to inspect what is actually sent
     if "effort" not in json.dumps(payload):
         raise CheckFailed(f"요청 payload에 effort가 없습니다 (keys={sorted(payload)})")
     llm.invoke("한 단어로 답하세요: 하늘은 무슨 색?")
@@ -245,7 +245,7 @@ def check_llm_cache() -> str:
     from core.llm import get_llm
 
     need("ANTHROPIC_API_KEY")
-    # 캐시 최소 길이를 넘기도록 긴 시스템 프롬프트를 만든다 (매 실행마다 새 캐시 키)
+    # build a long system prompt to exceed the minimum cache length (new cache key each run)
     filler = f"[{uuid4().hex}] " + " ".join(
         f"Rule {i}: always answer briefly and politely." for i in range(800)
     )
@@ -301,7 +301,7 @@ def main() -> int:
         try:
             detail = CHECKS[name]()
             mark = "PASS"
-        except Exception as e:  # 항목별로 계속 진행
+        except Exception as e:  # keep going item by item
             failed += 1
             mark = "FAIL"
             detail = f"{type(e).__name__}: {e}"

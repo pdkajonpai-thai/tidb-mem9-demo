@@ -1,13 +1,13 @@
-"""mem9 REST 클라이언트 (httpx), 호출 로그 기록.
+"""mem9 REST client (httpx), with call logging.
 
-스모크 테스트로 확인한 Hosted API 동작 (2026-10-29):
-- q 검색은 의미 검색이 아니라 단어 일치에 가깝다 (한국어는 조사가 붙으면 못 찾음).
-  → 추천 시에는 사용자(appId)의 기억 전체를 목록으로 가져와 LLM에 넘긴다.
-- content 쓰기는 memory_type=pinned만 허용된다 (insight는 400).
-- messages + mode=smart는 비동기(202)로 처리되고, 보통 10–25초 안에 insight가 추출된다.
-  추출되지 않는 경우도 있어 호출부에서 대체 경로를 둔다.
-- 추출된 insight는 입력이 한국어여도 영어로 저장된다.
-- 목록 응답은 {"memories": [...], "total", "limit", "offset"}이다. total이 한 페이지보다 많으면 offset으로 넘긴다.
+Hosted API behavior confirmed by the smoke test (2026-10-29):
+- q search is closer to word matching than semantic search (Korean words with particles attached are not found).
+  → For recommendations, the full list of the user's (appId) memories is fetched and passed to the LLM.
+- content writes are only allowed with memory_type=pinned (insight returns 400).
+- messages + mode=smart is processed asynchronously (202); insights are usually extracted within 10–25 seconds.
+  Sometimes nothing is extracted, so callers have a fallback path.
+- Extracted insights are stored in English even when the input is Korean.
+- The list response is {"memories": [...], "total", "limit", "offset"}. If total exceeds one page, page with offset.
 """
 from __future__ import annotations
 
@@ -21,20 +21,20 @@ from core.call_log import CallLog
 from core.config import get_settings
 
 MEMORIES = "/v1alpha2/mem9s/memories"
-RATE_LIMIT_RETRIES = 3     # 429 Too Many Requests 재시도 횟수
+RATE_LIMIT_RETRIES = 3     # retry count for 429 Too Many Requests
 PAGE_SIZE = 100
-SHOWN_ITEMS = 20           # 화면 기록용으로 응답의 memories를 앞에서 몇 개까지 남길지
+SHOWN_ITEMS = 20           # how many leading memories of a response to keep for the on-screen record
 
 
 def trimmed(response: Any, n: int = SHOWN_ITEMS) -> Any:
-    """화면에 보일 응답 사본: memories가 길면 앞의 n개만 남기고 잘린 개수를 적는다."""
+    """Copy of the response for display: if memories is long, keep only the first n and note how many were cut."""
     if not isinstance(response, dict) or len(response.get("memories") or []) <= n:
         return response
     return {**response, "memories": response["memories"][:n], "_truncated": len(response["memories"]) - n}
 
 
 def user_app_id(user_id: int, workspace: str) -> str:
-    """작업 공간 × 사용자별 기억 공간 (ARCHITECTURE.md 4.1)."""
+    """Memory space per workspace × user (ARCHITECTURE.md section 4.1)."""
     return f"{workspace}_user_{user_id}"
 
 
@@ -46,7 +46,7 @@ class Mem9Client:
             headers={"X-API-Key": api_key or s.mem9_api_key},
             timeout=timeout,
         )
-        self.calls = CallLog(maxlen=200)   # Behind the scenes 화면용 호출 로그 (작업 공간별)
+        self.calls = CallLog(maxlen=200)   # call log for the Behind the scenes screen (per workspace)
 
     def _request(self, method: str, path: str, **kwargs) -> Any:
         res = self._send(method, path, **kwargs)
@@ -69,7 +69,7 @@ class Mem9Client:
                 "ms": round((time.perf_counter() - start) * 1000),
                 "response": trimmed(response),
             })
-            # 요청 한도(429)에 걸리면 Retry-After(없으면 1·2·4초)만큼 쉬고 다시 보낸다
+            # On a rate limit (429), wait for Retry-After (or 1/2/4 seconds if absent) and resend
             if res.status_code != 429 or attempt == RATE_LIMIT_RETRIES:
                 break
             retry_after = res.headers.get("Retry-After", "")
@@ -99,7 +99,7 @@ class Mem9Client:
         limit: int = 50,
         offset: int = 0,
     ) -> dict:
-        """목록 응답 그대로 ({"memories", "total", "limit", "offset"})."""
+        """The list response as is ({"memories", "total", "limit", "offset"})."""
         params: dict[str, Any] = {"appId": app_id, "limit": limit}
         if offset:
             params["offset"] = offset
@@ -110,9 +110,9 @@ class Mem9Client:
         return self._request("GET", MEMORIES, params=params) or {}
 
     def list_all(self, app_id: str) -> tuple[list[dict], dict]:
-        """기억을 페이지를 넘겨 모두 가져온다. (전체 목록, 첫 페이지 응답)을 돌려준다.
+        """Fetches all memories, paging through them. Returns (full list, first page response).
 
-        한 번에 가져오는 개수를 넘는 기억이 빠지지 않게 한다 (추천이 오래된 기억을 놓치지 않도록).
+        Keeps memories beyond the per-request limit from being dropped (so recommendations don't miss old ones).
         """
         first = self.list_page(app_id, limit=PAGE_SIZE)
         memories = list(first.get("memories", []))
@@ -134,9 +134,9 @@ class Mem9Client:
         return self._request("POST", MEMORIES, json=body)
 
     def ingest(self, app_id: str, messages: list[dict[str, str]]) -> int:
-        """대화를 넘겨 mem9가 사실을 추출·조정하게 한다 (비동기, 결과는 wait_for_insights로 확인).
+        """Sends a conversation so mem9 extracts and reconciles facts (async; check results with wait_for_insights).
 
-        HTTP 상태 코드를 돌려준다 (접수되면 202).
+        Returns the HTTP status code (202 when accepted).
         """
         return self._send("POST", MEMORIES, json={"appId": app_id, "mode": "smart", "messages": messages}).status_code
 
@@ -144,9 +144,9 @@ class Mem9Client:
         self, app_id: str, known_ids: set[str], *, timeout: float = 30, interval: float = 1,
         on_poll: Callable[[int], None] | None = None,
     ) -> list[dict]:
-        """known_ids에 없던 insight가 생길 때까지 기다린다. 시간 안에 없으면 빈 목록.
+        """Waits until an insight not in known_ids appears. Returns an empty list if none appears in time.
 
-        on_poll(n)은 n번째 확인이 끝날 때마다 불린다 (진행 표시용).
+        on_poll(n) is called after each n-th check (for progress display).
         """
         deadline = time.monotonic() + timeout
         polls = 0
@@ -163,7 +163,7 @@ class Mem9Client:
         self._request("DELETE", f"{MEMORIES}/{memory_id}")
 
     def clear(self, app_id: str) -> int:
-        """appId의 기억을 모두 지운다 (데모 초기화용)."""
+        """Deletes all memories of the appId (for the demo reset)."""
         memories, _ = self.list_all(app_id)
         for m in memories:
             self.delete(m["id"])
@@ -175,5 +175,5 @@ class Mem9Client:
 
 @lru_cache
 def get_mem9() -> Mem9Client:
-    """프로세스 전체에서 공유하는 클라이언트 (호출 로그도 함께 쌓인다)."""
+    """Client shared by the whole process (the call log accumulates with it)."""
     return Mem9Client()

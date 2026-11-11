@@ -1,4 +1,4 @@
-"""② 사용자 대시보드: TiDB의 보유 자산·거래소 계정·해외 거래소 월말 잔고와 mem9 장기 기억."""
+"""② User dashboard: TiDB holdings, exchange accounts, overseas month-end balances, and mem9 long-term memory."""
 import altair as alt
 import streamlit as st
 
@@ -45,24 +45,25 @@ with left:
     st.dataframe(columns([{**a, "kind": t("region_short." + a["kind"])} for a in accounts]),
                  hide_index=True, alt=t("p2.accounts"))
 
-# Agent 기억 영역만 배경색을 달리해 TiDB 표와 구분한다 (컨테이너에 배경색 옵션이 없어 이 키에만 CSS를 준다).
-# 반투명 색이라 밝은·어두운 테마 모두에서 글자 대비가 유지된다
+# Give only the agent memory area a different background to set it apart from the TiDB tables (containers have no
+# background option, so CSS targets this key only).
+# The color is translucent, so text contrast holds in both light and dark themes
 st.html("""<style>
 .st-key-agent_memory { background: rgba(124, 92, 255, 0.08); border-color: rgba(124, 92, 255, 0.35) !important; }
 </style>""")
 with right, st.container(border=True, key="agent_memory"):
     app_id = user_app_id(uid, current_workspace())
-    memories, _ = get_mem9().list_all(app_id)       # 추천과 같이 전체를 읽는다 (한 페이지에서 잘리지 않게)
+    memories, _ = get_mem9().list_all(app_id)       # read all, like recommendations (not cut off at one page)
     shown = [m for m in memories if m["memory_type"] != "session"]
     st.markdown(t("p2.memories", n=len(shown), app=app_id))
-    lines = dict(zip((id(m) for m in shown), memory_lines(shown)))     # 번역은 한 번에
+    lines = dict(zip((id(m) for m in shown), memory_lines(shown)))     # translate in one call
     for source in MEMORY_SOURCES:
         group = [m for m in shown if memory_source(m) == source]
         if source == "history" and not group:
             continue
         st.markdown(t(f"mem.{source}", n=len(group)))
         if source == "learned" and memory_jobs.pending(app_id):
-            memory_updating_note(app_id)     # 뒤에서 정리 중이면 표시하고, 끝나면 화면을 다시 그린다
+            memory_updating_note(app_id)     # show if memory is being updated in the background; redraw when done
         if source != "history":
             st.caption(t(f"mem.{source}_desc"))
         if source == "learned" and not group:
@@ -75,7 +76,7 @@ with right, st.container(border=True, key="agent_memory"):
         for m in memories:
             st.text(f"[{m['memory_type']}] {m['content']}")
 
-# ---- 해외 거래소 월말 잔고 (해외 계좌 신고 참고 정보) ----
+# ---- Overseas-exchange month-end balances (reference for overseas account reporting) ----
 st.divider()
 st.markdown(t("p2.overseas_title"))
 status = overseas_status(db, uid)

@@ -1,10 +1,11 @@
-"""mem9 기억 정리를 백그라운드에서 돌리는 작업 (승인·거절 직후).
+"""Jobs that run mem9 memory updates in the background (right after approve/reject).
 
-결정과 체결은 바로 끝내고, 이유 ingest → mem9 추출 대기(또는 Claude 대체 추출) → 결정·체결 기록은
-뒤에서 진행한다. 화면은 작업의 단계(steps)를 읽어 "mem9 기억 정리" 타임라인으로 보여준다.
-다음 추천은 recall_memory에서 wait_pending()으로 정리가 끝나기를 기다린 뒤 기억을 읽는다.
+The decision and the fill finish immediately; reason ingest → waiting for mem9 extraction (or Claude fallback
+extraction) → recording the decision and fill proceed in the background. The screen reads the job's steps and
+shows them as the "mem9 기억 정리" ("mem9 memory update") timeline.
+The next recommendation waits in recall_memory via wait_pending() for the update to finish, then reads memories.
 
-작업은 서버 메모리에만 있다. 앱이 재시작되면 진행 중이던 작업은 사라진다 (데모 범위에서 허용).
+Jobs live only in server memory. If the app restarts, in-progress jobs are lost (acceptable for the demo).
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-KEEP_SECONDS = 600          # 끝난 작업을 화면에 보여줄 수 있게 남겨 두는 시간
+KEEP_SECONDS = 600          # how long finished jobs are kept so the screen can still show them
 
 
 class Job:
@@ -37,7 +38,7 @@ class Job:
         return (self.finished or time.monotonic()) - self.started
 
     def step(self, key: str, state: str = "done", **detail: Any) -> None:
-        """단계를 추가한다. 같은 key가 진행 중(running)이면 그 단계를 갱신한다."""
+        """Adds a step. If a step with the same key is in progress (running), updates that step instead."""
         with self._lock:
             last = self.steps[-1] if self.steps else None
             if last and last["key"] == key and last["state"] == "running":
@@ -61,7 +62,7 @@ _lock = threading.Lock()
 
 
 def submit(app_id: str, fn: Callable[[Job], None]) -> str:
-    """fn(job)을 백그라운드에서 실행한다. 현재 작업 공간(ContextVar)도 함께 넘겨 호출 기록이 제자리에 남게 한다."""
+    """Runs fn(job) in the background, passing the current workspace (ContextVar) so call records land correctly."""
     job = Job(app_id)
     with _lock:
         now = time.monotonic()
@@ -73,7 +74,7 @@ def submit(app_id: str, fn: Callable[[Job], None]) -> str:
     def run() -> None:
         try:
             ctx.run(fn, job)
-        except Exception as e:      # 기억 정리가 실패해도 결정·체결은 이미 끝났다
+        except Exception as e:      # even if the memory update fails, the decision and fill are already done
             job.error = f"{type(e).__name__}: {e}"
             logger.warning("mem9 기억 작업 실패 (app=%s)", app_id, exc_info=True)
         finally:
@@ -85,7 +86,8 @@ def submit(app_id: str, fn: Callable[[Job], None]) -> str:
 
 
 def run_later(fn: Callable[..., Any], *args: Any) -> None:
-    """기다릴 필요가 없는 뒷정리(미리 번역 등)를 백그라운드에서 실행한다. wait_pending은 이 작업을 기다리지 않는다."""
+    """Runs follow-up work that need not be awaited (pre-translation etc.) in the background.
+    wait_pending does not wait for it."""
     ctx = contextvars.copy_context()
 
     def run() -> None:
@@ -96,7 +98,7 @@ def run_later(fn: Callable[..., Any], *args: Any) -> None:
 
     try:
         _executor.submit(run)
-    except RuntimeError:        # 프로세스 종료 중(스크립트 끝)에는 뒷정리를 건너뛴다
+    except RuntimeError:        # skip follow-up work while the process is shutting down (end of a script)
         pass
 
 
@@ -111,7 +113,7 @@ def pending(app_id: str) -> list[Job]:
 
 
 def wait_pending(app_id: str, timeout: float = 20) -> None:
-    """이 기억 공간에 진행 중인 작업이 있으면 끝날 때까지 기다린다 (다음 추천이 새 기억을 읽도록)."""
+    """If this memory space has a job in progress, waits for it to finish (so the next recommendation sees new memories)."""
     deadline = time.monotonic() + timeout
     for job in pending(app_id):
         job.wait(max(0.0, deadline - time.monotonic()))
