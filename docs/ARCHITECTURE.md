@@ -1,7 +1,6 @@
 # End-to-End AI Investment Recommendation Demo on TiDB + mem9 — Architecture
 
-> Version 2.0 · 2026-10-29 (Korean/English switch, Google sign-in, access and activity log, deployment prep)
-> Status: Final (baseline document for implementation)
+> Last updated: 2026-11-11
 
 ---
 
@@ -470,8 +469,8 @@ LIMIT 10;
 - `%(intent)s` is a sentence built from the user profile and mem9 memories. Example: `"stablecoin interest income with low risk of principal loss"`
 - One query returns only opportunities that are **"semantically relevant + an asset actually held + on a chain of a usable exchange + within the risk limit"**.
 - The app's **SQL Inspector** panel shows this SQL, its results, and the execution time as is.
-- Stage 2 check (seed data + 3 temporary opportunities): For user A, FrogSwap with risk 5 was filtered out and only LP and lending remained; execution time was 0.5–0.8 seconds (including embedding the query text).
-- Stage 3 item to check: When test summaries were in English, changing the intent text ("liquidity provision opportunity" / "stablecoin interest income") did not change the ranking. Have the analysis graph write **summaries in Korean** and check that the ranking changes with the intent text.
+- Check with seed data + 3 temporary opportunities: For user A, FrogSwap with risk 5 was filtered out and only LP and lending remained; execution time was 0.5–0.8 seconds (including embedding the query text).
+- When test summaries were in English, changing the intent text ("liquidity provision opportunity" / "stablecoin interest income") did not change the ranking. So the analysis graph writes **summaries in Korean** ([core/analyzer.py](../core/analyzer.py)).
 - Note: For the demo data (a few hundred rows), exact search after filtering is enough. At the scale of millions of rows, this changes to picking candidates with the vector index first and then applying relational conditions; this is explained if the question comes up.
 
 ---
@@ -632,7 +631,7 @@ The sidebar has a **"Reset demo"** button (with a confirmation step) that restor
 - **Preventing double runs**: Once pressed, the button is disabled until the reset finishes (about 15 seconds). There is a lock per workspace, so even pressing it in two windows with the same account runs it only once.
 - **Reset everything** is at the bottom of the admin-only ⑥ Access log screen. Use it after changing the seed data (`data/`).
 
-**Implementation notes (stage 4)**
+**Implementation notes**
 - **Navigation**: `st.navigation` groups the 6 screens (Access log only for admins). The sidebar (user selection, reset, disclaimer) is drawn in one place, `app.py`. Shared helpers are in [ui/common.py](../ui/common.py).
 - **State is read from checkpoints**: Screens ③ and ④ re-read "what is being waited on right now (`choose_card` / `order_approval`)" from `interrupts` in `graph.get_state()`, not from the browser session. Pending recommendations and orders stay visible after a refresh, reconnect, or on another device.
 - **Reducing perceived wait**: On ③, `graph.stream(stream_mode=["updates", "messages"])` shows the following in real time.
@@ -962,7 +961,7 @@ tidb-mem9-demo/
 │   └── engine_mock.py          # Execution engine simulation (exchange API and on-chain routes)
 ├── sql/schema.sql
 ├── scripts/
-│   ├── smoke_test.py           # Stage 1: check TiDB, Auto Embedding, mem9, checkpointer, ChatAnthropic
+│   ├── smoke_test.py           # Check TiDB, Auto Embedding, mem9, checkpointer, ChatAnthropic
 │   ├── seed.py                 # Seed loading + initial mem9 memories + reset
 │   ├── run_scenario.py         # Runs the highlight scene without the UI, checks the 7 pass criteria (--lang ko/en, --timing, for rehearsal)
 │   └── ui_check.py             # AppTest screen check: sign-in gate, 6 screens × 2 languages rendering (⑤ per tab), 0 Korean characters in English mode, admin permissions, node description table
@@ -1034,7 +1033,7 @@ tidb-mem9-demo/
 | Duplicate node/tool execution on resume | Neither the `choose` node nor the `execute_order` tool has side effects before `interrupt()`. The tool's command ID and expiry time are made to come out the same every time, checked by pass criterion 7 |
 | LLM runs the engine API tool without approval | Approval is enforced with `interrupt()` inside the tool code. Engine `submit` is called only in the approve branch |
 | Execution agent builds wrong order arguments | Validate inside the tool with the same `step_errors` as recommendation validation and return errors to the agent (up to 3 times); parallel tool calls are disallowed |
-| LangChain does not support, or is slow to adopt, the latest Claude features (native structured output, `effort`, prompt caching) | Checked in stage 1; unsupported features are handled with the `anthropic` SDK for that call only, inside `core/llm.py` |
+| LangChain does not support, or is slow to adopt, the latest Claude features (native structured output, `effort`, prompt caching) | Checked by `scripts/smoke_test.py` (`llm_struct`, `llm_effort`, `llm_cache`); unsupported features are handled with the `anthropic` SDK for that call only, inside `core/llm.py` |
 | API rate limits during parallel analysis | Limit concurrency with `max_concurrency` + node `RetryPolicy` |
 | Several visitors at once | Each Google account gets its own workspace (section 6.3). Analysis results, recommendations, memories, resets, and Behind the scenes call records do not mix |
 | Anyone signed in can call the LLM | No cap; all LLM use is logged per Google account (IPs are not recorded, section 6.2) and checked on the admin screen (decision) |
@@ -1058,21 +1057,6 @@ LLM generation time varies by 2–3 seconds per run, so improvements are compare
 - Most of the remaining time is Claude generation in the `recommend` node (about 2,300 output tokens, of which about 1,250 are thinking, about 11–12 seconds). The model, thinking, and prompts were not changed.
 - The 7 pass criteria still passed in both Korean and English after the improvements.
 - Actual numbers in the deployed environment are checked with the time per node in the Behind the scenes > LangGraph tab.
-
----
-
-## 13. Implementation schedule (draft)
-
-| Stage | Work | Estimate |
-|---|---|---|
-| 1 | ✅ Done (2026-10-29): account setup, smoke test 8/8 passed, TiDB checkpointer implemented by hand, mem9 behavior checked and reflected in the design | 0.5 day |
-| 2 | ✅ Done (2026-10-29): `sql/schema.sql`, seed data (3 users, 5 exchanges, 13 protocols, 32 signals), `scripts/seed.py` (`reset_demo()`), `core/db.py` shared connection and SQL logging | 1 day |
-| 3 | ✅ Done (2026-10-29): analysis graph (32 raw signals → 18 opportunities, parallel about 17 seconds), recommendation/approval graph (validation and regeneration, interrupt, mem9 records and fallback path, mock execution), highlight scene tuning, `scripts/run_scenario.py`. Streaming confirmed working in the graph; UI integration in stage 4 | 2 days |
-| 3b | ✅ Done (2026-10-29): switched the execution step to agent + tool. Inside the `execute_order` tool: validate → engine simulate → `interrupt()` approval → engine submit or rejection record. Expanded to 7 pass criteria | 0.5 day |
-| 4c | ✅ Done (2026-10-29): Korean/English switch (same content, `?lang=English`), Google sign-in gate, access and activity log with admin screen, pinned dependency versions. Scenario passed 7 each in Korean and English; screen check passed | 0.5 day |
-| 4b | ✅ Done (2026-10-29): expanded to CEX-centric data. 8 CEX, exchange products, XRP/KAIA, broader meaning of location (chain), engine handling both exchange API and on-chain, month-end overseas exchange balances (`balance_snapshots`) and distance to the reporting threshold, user B scene. User A scene passed the 7 pass criteria again | 0.5 day |
-| 4 | ✅ Implemented (2026-10-29): 5 Streamlit screens, checkpoint-based state restore, streaming, memory translation, full flow checked with AppTest. **Remaining: check and polish the look in a browser** | 1 day |
-| 5 | Deployment, rehearsal, demo script cleanup | 0.5 day |
 
 ---
 

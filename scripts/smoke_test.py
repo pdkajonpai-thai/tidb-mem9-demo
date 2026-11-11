@@ -1,4 +1,4 @@
-"""Stage 1 smoke test: checks external service connections and items left unverified in the design.
+"""Smoke test: checks external service connections and items left unverified in the design.
 
     python scripts/smoke_test.py                 # all
     python scripts/smoke_test.py --only tidb,mem9
