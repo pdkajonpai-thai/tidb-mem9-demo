@@ -201,7 +201,7 @@ flowchart LR
     A1[① Analysis graph<br/>LangGraph]
     A2[② Recommendation graph<br/>LangGraph]
     A3[③ Approval UI]
-    A4[④ Mock on-chain engine]
+    A4[④ Mock execution engine<br/>exchange API · on-chain]
     INS[Behind the scenes<br/>SQL Inspector · mem9 log]
   end
 
@@ -400,23 +400,24 @@ state = graph.invoke(Command(resume={"action": "reject", "reason": reason}), con
 | `balance_snapshots` | user_id, month_end, exchange_id, asset_symbol, amount, price_usd, krw_value | Month-end balance history on overseas exchanges (overseas account reporting reference) |
 | `protocols` | id, name, chain, tvl_usd, audited, risk_score (1–5) | DeFi protocols and exchange savings/staking products (Upbit staking, Binance Simple Earn, Bybit Savings, OKX Earn) |
 
-**`chain` column = where the asset is**: an on-chain network (`arbitrum`, etc.) or **an exchange account (`binance`, etc.)**.
-- Example: BTC inside a Binance account has `chain = 'binance'`.
-- In `exchange_chains`, an exchange has both its own account location and its deposit/withdrawal networks.
-- So without changing the hybrid SQL in section 3.3, exchange products are filtered by the same conditions (where the asset is held, accessible locations, risk limit).
-- The execution engine handles an order step via the exchange API route if its location is an exchange account, and via the on-chain route if it is a network.
 | `strategies` | id, type (`swap`/`lend`/`stake`/`lp`), action_template (JSON) | Strategy templates the execution engine understands |
 | `raw_signals` | id, source, author, content, posted_at | Collected raw text (no embedding: semantic search happens only on `opportunities`, so it was left out to shorten reset time) |
 | `workspaces` | id, created_at, reset_at | Per-visitor workspace (hash of the Google account email; the email itself is not stored). Section 6.3 |
 | `analyzed_signals` | workspace, signal_id, analyzed_at | Raw signals already analyzed per workspace |
 | `opportunities` | id, workspace, signal_id, title, asset, chain, protocol_id, strategy_id, action_type, expected_apy, risk_level, horizon, confidence, summary, rationale, summary_vec (Auto Embedding), status, created_at | Investment opportunities structured by the LLM |
-| `recommendations` | id, workspace, user_id, opportunity_id, thread_id, rank, rationale, memory_refs (JSON), command (JSON), model, status (`AWAITING_APPROVAL`/`APPROVED`/`REJECTED`), decided_at, created_at | Recommendation history, linked to the LangGraph thread |
+| `recommendations` | id, workspace, user_id, opportunity_id, thread_id, rank, rationale, memory_refs (JSON), command (JSON), model, status (`AWAITING_APPROVAL`/`SKIPPED`/`APPROVED`/`REJECTED`/`FAILED`), decided_at, created_at | Recommendation history, linked to the LangGraph thread |
 | `execution_orders` | id, recommendation_id, command (JSON), status (`PENDING`/`SUBMITTED`/`CONFIRMED`/`FAILED`), tx_hash, created_at, updated_at | Execution commands and status |
 | `access_logs` | id, at, event, email, name, ip·forwarded_for (left empty), user_agent, session_id, detail (JSON) | Access and activity log (sign-ins, LLM use). **Not cleared by demo reset** |
 | `translations` | src_hash, lang, src, text, created_at | Translation cache for display. Keyed on source text, so **not cleared by demo reset** |
 | `lg_checkpoints` | thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, step, source, checkpoint (BLOB), metadata (BLOB), created_at | LangGraph checkpoints (created by `TiDBSaver.setup()`; not edited directly) |
 | `lg_checkpoint_blobs` | thread_id, checkpoint_ns, channel, version, type, blob | State values per channel |
 | `lg_checkpoint_writes` | thread_id, checkpoint_ns, checkpoint_id, task_id, idx, task_path, channel, type, blob | Intermediate node writes (incl. interrupt wait info) |
+
+**`chain` column = where the asset is**: an on-chain network (`arbitrum`, etc.) or **an exchange account (`binance`, etc.)**.
+- Example: BTC inside a Binance account has `chain = 'binance'`.
+- In `exchange_chains`, an exchange has both its own account location and its deposit/withdrawal networks.
+- So without changing the hybrid SQL in section 3.3, exchange products are filtered by the same conditions (where the asset is held, accessible locations, risk limit).
+- The execution engine handles an order step via the exchange API route if its location is an exchange account, and via the on-chain route if it is a network.
 
 ### 3.2 Example vector column definition
 
@@ -491,6 +492,7 @@ LIMIT 10;
 | Recommendation rejection — reason | `messages` (**user utterance only**) + `mode: smart` (async) | User: "Volatile products make me uneasy. I'm also worried about impermanent loss." → mem9 condenses it into `insight`s such as "Rejects investment products with high volatility" |
 | Recommendation approval — why chosen (optional input) | Same method as the rejection reason | User: "I like stable interest income I can withdraw at any time." → "Prefers stable interest income that can be withdrawn at any time" (confirmed 2026-10-30) |
 | When reason extraction fails (fallback path) | Claude extracts facts → `content` + `pinned`, `tags: ["insight-fallback"]` | Only when there is no new `insight` within 15 seconds |
+| Execution complete | `content` + `pinned`, `tags: ["execution"]` | "Approved and executed a deposit of 1,000 USDC to Aave (Arbitrum) on 2026-10-29" |
 
 - **Background processing (2026-10-30)**: All mem9 writes right after approval or rejection (reason ingest, waiting for extraction and the fallback path, decision and fill records) run as a background job ([core/memory_jobs.py](../core/memory_jobs.py)). The screen waits only for the fill result and the agent reply.
   - Measured: decision handling 2.0–3.1 seconds (screen wait), memory update 5.8–6.9 seconds (background).
@@ -498,7 +500,6 @@ LIMIT 10;
   - While the update is running, the dashboard shows "Updating…" next to "Learned from conversation", and redraws by itself when done.
   - The next recommendation's `recall_memory` waits for the in-progress job to finish before reading memories. Even if you press "Get new recommendations" before the update finishes, the new memories are reflected.
   - When mem9 returns 429 (rate limit), it waits for `Retry-After` (or 1, 2, 4 seconds if absent) and resends up to 3 times.
-| Execution complete | `content` + `pinned`, `tags: ["execution"]` | "Approved and executed a deposit of 1,000 USDC to Aave (Arbitrum) on 2026-10-29" |
 
 - Why the recommendation text (assistant message) is not sent along with the rejection reason: when the Korean recommendation text was mixed in, extraction did not happen (findings in 1.2). Which product was rejected is kept in the decision record and the `recommendations` table.
 
@@ -625,13 +626,14 @@ Expanding **"How AI turned this order into an engine command (structured output)
 | 3 | Personalized recommendations | Graph progress steps → Top-10 candidates → 3 LLM recommendation cards + rationale (live streaming, data + memories used) | The two technologies combined |
 | 4 | Approval & execution | "Request execution" on a recommendation → approval screen (order summary, route, steps, simulation; overseas balance info for overseas exchange orders; raw text → JSON → engine command process (section 5.1)) → approve/reject (reason) → engine response and agent result summary | The agent passes an AI-built JSON command to the engine API and a human approves; approval survives a refresh |
 | 5 | Behind the scenes | SQL Inspector, mem9 API calls (request and response JSON), engine API call log (Engine calls), LangGraph (graph, visited nodes, node description table, time per node, checkpoint history, analysis graph), Tech notes (mem9 compression/summarization and loss, LangGraph components and execution flow), architecture diagram | Technical trust |
+| 6 | Access log (admins only) | Sign-ins and LLM use per Google account, usage counts, Reset everything | Operating the shared demo |
 
 The sidebar has a **"Reset demo"** button (with a confirmation step) that restores **only your own workspace** to the pre-demo state (section 6.3). Anyone can use it, and it does not affect other visitors.
 - **Preventing double runs**: Once pressed, the button is disabled until the reset finishes (about 15 seconds). There is a lock per workspace, so even pressing it in two windows with the same account runs it only once.
 - **Reset everything** is at the bottom of the admin-only ⑥ Access log screen. Use it after changing the seed data (`data/`).
 
 **Implementation notes (stage 4)**
-- **Navigation**: `st.navigation` groups the 5 screens. The sidebar (user selection, reset, disclaimer) is drawn in one place, `app.py`. Shared helpers are in [ui/common.py](../ui/common.py).
+- **Navigation**: `st.navigation` groups the 6 screens (Access log only for admins). The sidebar (user selection, reset, disclaimer) is drawn in one place, `app.py`. Shared helpers are in [ui/common.py](../ui/common.py).
 - **State is read from checkpoints**: Screens ③ and ④ re-read "what is being waited on right now (`choose_card` / `order_approval`)" from `interrupts` in `graph.get_state()`, not from the browser session. Pending recommendations and orders stay visible after a refresh, reconnect, or on another device.
 - **Reducing perceived wait**: On ③, `graph.stream(stream_mode=["updates", "messages"])` shows the following in real time.
   - Progress steps (✓ memories → search intent → hybrid search → writing recommendations → validation)
@@ -957,7 +959,7 @@ tidb-mem9-demo/
 │   ├── checkpoint_tidb.py      # LangGraph checkpointer for TiDB (TiDBSaver, lg_* tables)
 │   ├── audit.py                # Sign-in identity, access and activity log (access_logs), admin check
 │   ├── overseas.py             # Month-end overseas exchange balance aggregation and distance to the reporting threshold (overseas account reporting reference, SQL only)
-│   └── engine_mock.py          # On-chain execution simulation
+│   └── engine_mock.py          # Execution engine simulation (exchange API and on-chain routes)
 ├── sql/schema.sql
 ├── scripts/
 │   ├── smoke_test.py           # Stage 1: check TiDB, Auto Embedding, mem9, checkpointer, ChatAnthropic
@@ -967,9 +969,9 @@ tidb-mem9-demo/
 ├── data/
 │   ├── signals.json            # Influencer and DeFi raw posts (synthetic)
 │   ├── users.json              # 3 users, exchange accounts, onboarding preferences (initial mem9 memories)
-│   ├── exchanges.json          # 5 exchanges and supported chains
+│   ├── exchanges.json          # 11 exchanges and supported chains
 │   ├── holdings.json           # Reference prices, token master, holdings
-│   └── protocols.json          # 13 protocols, 4 strategy templates
+│   └── protocols.json          # 17 protocols and products, 4 strategy templates
 ├── requirements.txt            # streamlit, pymysql, anthropic, httpx, pydantic,
 │                               # langgraph, langchain-anthropic, certifi, python-dotenv, langsmith (optional)
 ├── .env.example                # List of key names (real values in .env, excluded from git)
@@ -1022,9 +1024,23 @@ tidb-mem9-demo/
 | Recommendation wait time | See section 12.1 below. Turning thinking off makes it 2x faster but the results wobble, so it is kept on. The screen streams progress steps, AI review notes (thinking summary), and cards being written |
 | mem9 `q` search is not semantic search | Do not use `q`; fetch the user's whole memory list and pass it to Claude |
 | Embedding input length limit (2,048 characters) | Embed only the LLM-written summary (`summary`) instead of the raw text |
-| External API outage during a live demo | Reset demo button, LLM response cache mode from the previous rehearsal |
+| External API outage during a live demo | Run `scripts/smoke_test.py` right before the demo to check every external service, and use the Reset demo button to start from a clean state. There is no offline mode, so an outage of Claude or mem9 stops new analysis and recommendations |
 | In-progress memory update jobs lost on app restart | Jobs live only in server memory. Decisions and fills are already saved in TiDB; only the mem9 memories being updated at that moment are lost. Avoid restarting right before a demo |
 | Insufficient LLM response quality | Just switch `LLM_MODEL` to `claude-sonnet-5-5` |
+| LLM response cut off (`stop_reason` is `refusal`/`max_tokens`) | Detect and retry; on failure, inform the user |
+| LLM builds a wrong execution command | Revalidate holding amount, chain, and slippage in the graph's `validate` node; regenerate once on failure |
+| Bugs in the hand-written checkpointer (`TiDBSaver`) | The smoke test checks interrupt → resume on a new connection → history query → delete every time. Pin the version on LangGraph upgrades and recheck |
+| TiDB connection drop (idle timeout) | `TiDBSaver` reconnects on a connection error and retries once |
+| Duplicate node/tool execution on resume | Neither the `choose` node nor the `execute_order` tool has side effects before `interrupt()`. The tool's command ID and expiry time are made to come out the same every time, checked by pass criterion 7 |
+| LLM runs the engine API tool without approval | Approval is enforced with `interrupt()` inside the tool code. Engine `submit` is called only in the approve branch |
+| Execution agent builds wrong order arguments | Validate inside the tool with the same `step_errors` as recommendation validation and return errors to the agent (up to 3 times); parallel tool calls are disallowed |
+| LangChain does not support, or is slow to adopt, the latest Claude features (native structured output, `effort`, prompt caching) | Checked in stage 1; unsupported features are handled with the `anthropic` SDK for that call only, inside `core/llm.py` |
+| API rate limits during parallel analysis | Limit concurrency with `max_concurrency` + node `RetryPolicy` |
+| Several visitors at once | Each Google account gets its own workspace (section 6.3). Analysis results, recommendations, memories, resets, and Behind the scenes call records do not mix |
+| Anyone signed in can call the LLM | No cap; all LLM use is logged per Google account (IPs are not recorded, section 6.2) and checked on the admin screen (decision) |
+| Regulation and misunderstanding | Every screen has the notice "For information only, not investment or tax advice, execution is simulated, synthetic data". Regulatory review of personalized recommendations is done separately before a real service (section 0.1) |
+| The structure differs depending on whether the engine to integrate is exchange API or on-chain | The engine tool accepts both routes, so either plugs into the same structure |
+| Overseas account reporting information mistaken for tax advice | Only SQL does the calculation; the LLM is not involved. The wording stays factual and shows "the judgment is for a tax professional" alongside |
 
 ### 12.1 Response time review (2026-11-05)
 
@@ -1041,21 +1057,7 @@ LLM generation time varies by 2–3 seconds per run, so improvements are compare
 
 - Most of the remaining time is Claude generation in the `recommend` node (about 2,300 output tokens, of which about 1,250 are thinking, about 11–12 seconds). The model, thinking, and prompts were not changed.
 - The 7 pass criteria still passed in both Korean and English after the improvements.
-- Actual numbers in the deployed environment are checked with the time per node in the ⑤ LangGraph tab.
-| LLM response cut off (`stop_reason` is `refusal`/`max_tokens`) | Detect and retry; on failure, inform the user |
-| LLM builds a wrong execution command | Revalidate holding amount, chain, and slippage in the graph's `validate` node; regenerate once on failure |
-| Bugs in the hand-written checkpointer (`TiDBSaver`) | The smoke test checks interrupt → resume on a new connection → history query → delete every time. Pin the version on LangGraph upgrades and recheck |
-| TiDB connection drop (idle timeout) | `TiDBSaver` reconnects on a connection error and retries once |
-| Duplicate node/tool execution on resume | Neither the `choose` node nor the `execute_order` tool has side effects before `interrupt()`. The tool's command ID and expiry time are made to come out the same every time, checked by pass criterion 7 |
-| LLM runs the engine API tool without approval | Approval is enforced with `interrupt()` inside the tool code. Engine `submit` is called only in the approve branch |
-| Execution agent builds wrong order arguments | Validate inside the tool with the same `step_errors` as recommendation validation and return errors to the agent (up to 3 times); parallel tool calls are disallowed |
-| LangChain does not support, or is slow to adopt, the latest Claude features (native structured output, `effort`, prompt caching) | Checked in stage 1; unsupported features are handled with the `anthropic` SDK for that call only, inside `core/llm.py` |
-| API rate limits during parallel analysis | Limit concurrency with `max_concurrency` + node `RetryPolicy` |
-| Several visitors at once | Each Google account gets its own workspace (section 6.3). Analysis results, recommendations, memories, resets, and Behind the scenes call records do not mix |
-| Anyone signed in can call the LLM | No cap; all LLM use is logged with the account and IP, and checked on the admin screen (decision) |
-| Regulation and misunderstanding | Every screen has the notice "For information only, not investment or tax advice, execution is simulated, synthetic data". Regulatory review of personalized recommendations is done separately before a real service (section 0.1) |
-| The structure differs depending on whether the engine to integrate is exchange API or on-chain | The engine tool accepts both routes, so either plugs into the same structure |
-| Overseas account reporting information mistaken for tax advice | Only SQL does the calculation; the LLM is not involved. The wording stays factual and shows "the judgment is for a tax professional" alongside |
+- Actual numbers in the deployed environment are checked with the time per node in the Behind the scenes > LangGraph tab.
 
 ---
 
